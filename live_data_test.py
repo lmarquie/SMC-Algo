@@ -35,6 +35,7 @@ class PaperTradingBot:
         self.total_trades = 0
         self.winning_trades = 0
         self.total_pnl = 0
+        self.last_stop_idx = {symbol: -10 for symbol in SYMBOLS}  # Track last stop loss exit index per symbol
         
         # Setup logging
         logging.basicConfig(
@@ -83,8 +84,8 @@ class PaperTradingBot:
         # Calculate position value (size × entry price)
         position_value = position_size * entry_price
         
-        # Capital constraints: $10,000 capital with 20x leverage = $200,000 max position value
-        max_position_value = 10000 * 20  # $200,000
+        # Capital constraints: $10,000 capital with 50x leverage = $500,000 max position value
+        max_position_value = 10000 * 50  # $500,000
         
         # Check if position value exceeds maximum allowed
         if position_value > max_position_value:
@@ -221,8 +222,10 @@ class PaperTradingBot:
         # Check stop loss ONLY
         if direction == 'long' and current_low <= stop_loss:
             self.close_paper_position(symbol, stop_loss, "Stop Loss Hit")
+            self.last_stop_idx[symbol] = self.candle_idx if hasattr(self, 'candle_idx') else 0
         elif direction == 'short' and current_high >= stop_loss:
             self.close_paper_position(symbol, stop_loss, "Stop Loss Hit")
+            self.last_stop_idx[symbol] = self.candle_idx if hasattr(self, 'candle_idx') else 0
     
     def analyze_live_market(self, symbol, ltf_data, htf_data, current_price):
         """Analyze live market conditions for a specific symbol"""
@@ -307,6 +310,7 @@ class PaperTradingBot:
         start_time = datetime.now()
         end_time = start_time + timedelta(minutes=duration_minutes)
         
+        candle_idx = 0  # Track candle index for cooldown
         while datetime.now() < end_time:
             try:
                 # Process each symbol
@@ -326,8 +330,8 @@ class PaperTradingBot:
                         # Analyze market
                         trend_info, setup = self.analyze_live_market(symbol, ltf_data, htf_data, current_price)
                         
-                        # Open new position if setup detected and not in position for this symbol
-                        if setup and symbol not in self.current_positions:
+                        # Open new position if setup detected, not in position, and cooldown passed
+                        if setup and symbol not in self.current_positions and (candle_idx - self.last_stop_idx[symbol] >= 5):
                             self.open_paper_position(symbol, setup, current_price)
                         
                         # Print summary for this symbol
@@ -335,7 +339,7 @@ class PaperTradingBot:
                     
                     # Small delay between symbols
                     await asyncio.sleep(2)
-                
+                candle_idx += 1
                 # Wait before next cycle
                 await asyncio.sleep(30)  # Check every 30 seconds
                 

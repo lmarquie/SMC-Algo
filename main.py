@@ -158,7 +158,7 @@ class TradingBot:
                 order_type='market',
                 price=setup['entry_price'],
                 stop_loss=final_stop,
-                leverage=20  # 20x leverage
+                leverage=50  # 50x leverage
             )
             
             if 'error' not in order_result:
@@ -250,7 +250,7 @@ class TradingBot:
         """Calculate position size based on risk management rules with capital and leverage constraints"""
         try:
             # Use fixed dollar risk instead of percentage
-            max_risk_amount = self.config['RISK_PER_TRADE']  # $250
+            max_risk_amount = self.config['RISK_PER_TRADE']  # $100
             
             # Calculate position size based on dollar risk
             # risk_amount is the price difference between entry and stop
@@ -259,8 +259,8 @@ class TradingBot:
             # Calculate position value (size × entry price)
             position_value = position_size * entry_price
             
-            # Capital constraints: $10,000 capital with 20x leverage = $200,000 max position value
-            max_position_value = 10000 * 20  # $200,000
+            # Capital constraints: $10,000 capital with 50x leverage = $500,000 max position value
+            max_position_value = 10000 * 50  # $500,000
             
             # Check if position value exceeds maximum allowed
             if position_value > max_position_value:
@@ -298,7 +298,7 @@ class TradingBot:
             # Cap at maximum position size from config
             position_size = min(position_size, self.config['POSITION_SIZE'])
             
-            leverage = 20  # 20x leverage
+            leverage = 50  # 50x leverage
             self.logger.info(f"Position size: {position_size:.4f} (Risk: ${max_risk_amount}, Leverage: {leverage}x)")
             return position_size, setup['stop_loss']
             

@@ -35,8 +35,9 @@ class RealDataBacktester:
         self.trades = []
         self.equity_curve = []
         self.current_position = None
-        self.initial_balance = 10000  # Starting balance
+        self.initial_balance = config.get('INITIAL_BALANCE', 10000)
         self.current_balance = self.initial_balance
+        self.last_stop_idx = -10  # Track last stop loss exit index for cooldown
         
         # Setup logging
         logging.basicConfig(level=logging.INFO)
@@ -256,21 +257,26 @@ class RealDataBacktester:
             if self.current_position:
                 stop_loss = self.current_position['stop_loss']
                 direction = self.current_position['direction']
-                # For long: if low breaches stop, exit at stop price
                 if direction == 'long' and current_low <= stop_loss:
                     self._close_position(stop_loss, current_candle.name, "Stop Loss Hit")
-                # For short: if high breaches stop, exit at stop price
+                    self.last_stop_idx = i  # Set cooldown
                 elif direction == 'short' and current_high >= stop_loss:
                     self._close_position(stop_loss, current_candle.name, "Stop Loss Hit")
+                    self.last_stop_idx = i  # Set cooldown
             
-            # Check for new entry if no position
-            if not self.current_position:
+            # Check for new entry if no position and cooldown passed
+            if not self.current_position and (i - self.last_stop_idx >= 5):
                 setup = self._check_entry_setup(current_data, current_htf_data, current_price)
                 if setup:
                     self._open_position(setup, current_price, current_candle.name)
             
             # Only update equity curve if in position
             self._update_equity_curve(current_price, current_candle.name)
+            
+            # After stop loss check, if position still exists, update trailing stop
+            if self.current_position:
+                # Update trailing stop
+                self.strategy.update_trailing_stop(current_data, self.current_position)
         
         # Close any remaining position
         if self.current_position:
@@ -341,6 +347,11 @@ class RealDataBacktester:
             
             # Only update equity curve if in position
             self._update_equity_curve(current_price, current_candle.name)
+            
+            # After stop loss check, if position still exists, update trailing stop
+            if self.current_position:
+                # Update trailing stop
+                self.strategy.update_trailing_stop(current_data, self.current_position)
         
         # Close any remaining position
         if self.current_position:
@@ -401,32 +412,28 @@ class RealDataBacktester:
         """Close current position"""
         if not self.current_position:
             return
-        
         try:
+            # Always use 'Stop Loss Hit' as the reason
+            reason = "Stop Loss Hit"
             # Calculate P&L
             if self.current_position['direction'] == 'long':
                 pnl_pct = (current_price - self.current_position['entry_price']) / self.current_position['entry_price']
             else:
                 pnl_pct = (self.current_position['entry_price'] - current_price) / self.current_position['entry_price']
-            
             # Calculate dollar P&L - FIXED: Use position size × price difference
             price_diff = abs(current_price - self.current_position['entry_price'])
             pnl_dollar = self.current_position['size'] * price_diff
-            
             # Apply direction
             if self.current_position['direction'] == 'long':
                 pnl_dollar = pnl_dollar if current_price > self.current_position['entry_price'] else -pnl_dollar
             else:
                 pnl_dollar = pnl_dollar if current_price < self.current_position['entry_price'] else -pnl_dollar
-            
             # Debug P&L calculation
             self.logger.info(f"P&L Debug: Entry: ${self.current_position['entry_price']:.4f}, Exit: ${current_price:.4f}")
             self.logger.info(f"P&L Debug: Price diff: ${price_diff:.4f}, Position size: {self.current_position['size']:.4f}")
             self.logger.info(f"P&L Debug: Raw P&L: ${pnl_dollar:.2f}")
-            
             # Update balance
             self.current_balance += pnl_dollar
-            
             # Record trade
             trade = {
                 'entry_time': self.current_position['entry_time'],
@@ -440,21 +447,17 @@ class RealDataBacktester:
                 'reason': reason,
                 'exit_reason': reason
             }
-            
             self.trades.append(trade)
-            
             self.logger.info(f"Position closed: {pnl_pct:.4f} ({pnl_dollar:.2f}) - {reason}")
-            
             # Reset position
             self.current_position = None
-            
         except Exception as e:
             self.logger.error(f"Error closing position: {e}")
     
     def _calculate_position_size(self, risk_amount: float, entry_price: float, setup: Dict) -> tuple:
-        """Calculate position size to guarantee $250 risk with capital and leverage constraints"""
-        # We want to risk exactly $250
-        target_risk = 250  # $250 fixed risk
+        """Calculate position size to guarantee $100 risk with capital and leverage constraints"""
+        # We want to risk exactly $100
+        target_risk = 100  # $100 fixed risk
         
         # Position size = Target Risk / Price Risk per Unit
         # This guarantees we risk exactly $250
@@ -463,8 +466,8 @@ class RealDataBacktester:
         # Calculate position value (size × entry price)
         position_value = position_size * entry_price
         
-        # Capital constraints: $10,000 capital with 20x leverage = $200,000 max position value
-        max_position_value = 10000 * 20  # $200,000
+        # Capital constraints: $10,000 capital with 50x leverage = $500,000 max position value
+        max_position_value = 10000 * 50  # $500,000
         
         # Check if position value exceeds maximum allowed
         if position_value > max_position_value:
@@ -494,7 +497,7 @@ class RealDataBacktester:
                 # If still too large, scale down position size as last resort
                 position_size = max_position_value / entry_price
                 actual_risk = position_size * new_risk_amount
-                self.logger.warning(f"Position size reduced due to capital constraints. Risk: ${actual_risk:.2f} instead of $250")
+                self.logger.warning(f"Position size reduced due to capital constraints. Risk: ${actual_risk:.2f} instead of $100")
                 return position_size, new_stop
         
         return position_size, setup['stop_loss']
@@ -530,6 +533,7 @@ class RealDataBacktester:
                 'avg_loss': 0,
                 'profit_factor': 0,
                 'max_drawdown': 0,
+                'avg_rr': 0,  # Add average R:R
                 'initial_balance': self.initial_balance,
                 'final_balance': self.current_balance
             }
@@ -548,6 +552,20 @@ class RealDataBacktester:
         total_loss = abs(sum([t['pnl_dollar'] for t in losing_trades]))
         
         profit_factor = total_profit / total_loss if total_loss > 0 else float('inf')
+        
+        # Calculate average R:R ratio
+        rr_ratios = []
+        for trade in self.trades:
+            # Calculate risk (entry to stop loss distance)
+            risk_distance = abs(trade['entry_price'] - trade.get('stop_loss', trade['entry_price'] * 0.98))
+            # Calculate reward (actual P&L distance)
+            reward_distance = abs(trade['exit_price'] - trade['entry_price'])
+            
+            if risk_distance > 0:
+                rr_ratio = reward_distance / risk_distance
+                rr_ratios.append(rr_ratio)
+        
+        avg_rr = np.mean(rr_ratios) if rr_ratios else 0
         
         # Calculate drawdown
         equity_values = [e['equity'] for e in self.equity_curve]
@@ -573,6 +591,7 @@ class RealDataBacktester:
             'avg_loss': avg_loss,
             'profit_factor': profit_factor,
             'max_drawdown': max_drawdown * 100,
+            'avg_rr': avg_rr,  # Add average R:R
             'final_balance': self.current_balance,
             'initial_balance': self.initial_balance
         }
@@ -753,6 +772,7 @@ class RealDataBacktester:
         print(f"Average Win: ${results.get('avg_win', 0):.2f}")
         print(f"Average Loss: ${results.get('avg_loss', 0):.2f}")
         print(f"Profit Factor: {results.get('profit_factor', 0):.2f}")
+        print(f"Average R:R: {results.get('avg_rr', 0):.2f}")  # Add average R:R
         print(f"Max Drawdown: {results.get('max_drawdown', 0):.2f}%")
         print("="*50)
 
@@ -771,7 +791,7 @@ async def run_real_data_backtest():
         'DISPLACEMENT_THRESHOLD': DISPLACEMENT_THRESHOLD,
         'STOP_LOSS_BUFFER': STOP_LOSS_BUFFER,
         'TAKE_PROFIT_RATIO': TAKE_PROFIT_RATIO,
-        'RISK_PER_TRADE': RISK_PER_TRADE,
+        'RISK_PER_TRADE': 250,
         'TRAILING_CONFIRMATION_CANDLES': TRAILING_CONFIRMATION_CANDLES,
         'DAILY_LOSS_LIMIT': 1000,  # $1000 daily loss limit
         'LEVERAGE': 20,  # 20x leverage
@@ -850,6 +870,20 @@ async def run_real_data_backtest():
         total_losses = abs(sum([t['pnl_dollar'] for t in losing_trades]))
         profit_factor = total_wins / total_losses if total_losses > 0 else 0
         
+        # Calculate average R:R ratio for all trades
+        rr_ratios = []
+        for trade in all_trades:
+            # Calculate risk (entry to stop loss distance)
+            risk_distance = abs(trade['entry_price'] - trade.get('stop_loss', trade['entry_price'] * 0.98))
+            # Calculate reward (actual P&L distance)
+            reward_distance = abs(trade['exit_price'] - trade['entry_price'])
+            
+            if risk_distance > 0:
+                rr_ratio = reward_distance / risk_distance
+                rr_ratios.append(rr_ratio)
+        
+        avg_rr = np.mean(rr_ratios) if rr_ratios else 0
+        
         print(f"Final Balance: ${final_balance:,.2f}")
         print(f"Total P&L: ${total_pnl:.2f}")
         print(f"Total Return: {total_return:.2f}%")
@@ -859,6 +893,7 @@ async def run_real_data_backtest():
         print(f"Average Win: ${avg_win:.2f}")
         print(f"Average Loss: ${avg_loss:.2f}")
         print(f"Profit Factor: {profit_factor:.2f}")
+        print(f"Average R:R: {avg_rr:.2f}")  # Add average R:R
         
         # Calculate max drawdown from combined equity curve
         if all_equity_curves:

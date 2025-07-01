@@ -381,15 +381,15 @@ class FVGStrategy:
             current_profit = position['entry_price'] - current_price
             current_risk = position['stop_loss'] - position['entry_price']
         
-        # Only update trailing stop if R:R > 1:1 (profit > risk)
-        if current_profit <= current_risk:
-            return False  # Keep static stop until profitable
+        # Only update trailing stop if R:R > 0.5:1 (start trailing earlier)
+        if current_profit <= current_risk * 0.5:
+            return False  # Keep static stop until slightly profitable
         
         # Store original static stop if not already stored
         if 'original_stop_loss' not in position:
             position['original_stop_loss'] = position['stop_loss']
             position['trailing_enabled'] = True
-            self.logger.info(f"🎯 Trailing stop enabled - R:R now > 1:1. Profit: ${current_profit:.2f}, Risk: ${current_risk:.2f}")
+            self.logger.info(f"🎯 Trailing stop enabled - R:R now > 0.5:1. Profit: ${current_profit:.2f}, Risk: ${current_risk:.2f}")
         
         # Now update trailing stop based on structure
         df_analyzed = self.analyzer.analyze_structure(df)
@@ -405,6 +405,7 @@ class FVGStrategy:
             if not swing_lows.empty:
                 # Find the HIGHEST swing low (most favorable for longs)
                 best_swing_low = swing_lows['swing_low'].max()
+                # Tighter stop distance - closer to swing low for faster trailing
                 new_stop = best_swing_low - self.config.get('STOP_LOSS_BUFFER', 0.005)
                 
                 # Only move stop up (more favorable) - NEVER move down for longs
@@ -444,6 +445,7 @@ class FVGStrategy:
             if not swing_highs.empty:
                 # Find the LOWEST swing high (most favorable for shorts)
                 best_swing_high = swing_highs['swing_high'].min()
+                # Tighter stop distance - closer to swing high for faster trailing
                 new_stop = best_swing_high + self.config.get('STOP_LOSS_BUFFER', 0.005)
                 
                 # Only move stop down (more favorable) - NEVER move up for shorts
