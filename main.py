@@ -8,6 +8,7 @@ from config import *
 from hyperliquid_client import HyperliquidClient
 from trading_strategy import FVGStrategy
 from structure_analysis import StructureAnalyzer
+from notifications import send_telegram_message
 
 class TradingBot:
     def __init__(self):
@@ -55,6 +56,7 @@ class TradingBot:
     async def start(self):
         """Start the trading bot"""
         self.logger.info("Starting FVG Trading Bot...")
+        send_telegram_message(f"🚀 LIVE BOT STARTED: Trading {', '.join(self.config['SYMBOLS'])} | Risk: ${self.config['RISK_PER_TRADE']}")
         self.is_running = True
         
         try:
@@ -143,16 +145,19 @@ class TradingBot:
 
                 # If RR >= 3, move stop loss to 1:1 RR
                 if rr_ratio >= 3:
+                    old_stop = position['stop_loss']
                     if position['direction'] == 'long':
                         new_stop = position['entry_price'] + initial_risk
                         if position['stop_loss'] < new_stop:
                             position['stop_loss'] = new_stop
                             self.logger.info(f"Moved AVAX stop loss to 1:1 RR (${new_stop:.4f}) after reaching 3:1 RR")
+                            send_telegram_message(f"🎯 AVAX 3:1 RR TRIGGERED! Stop moved: ${old_stop:.4f} → ${new_stop:.4f} (1:1 RR)")
                     else:
                         new_stop = position['entry_price'] - initial_risk
                         if position['stop_loss'] > new_stop:
                             position['stop_loss'] = new_stop
                             self.logger.info(f"Moved AVAX stop loss to 1:1 RR (${new_stop:.4f}) after reaching 3:1 RR")
+                            send_telegram_message(f"🎯 AVAX 3:1 RR TRIGGERED! Stop moved: ${old_stop:.4f} → ${new_stop:.4f} (1:1 RR)")
             
         except Exception as e:
             self.logger.error(f"Error in trading cycle: {e}")
@@ -166,6 +171,7 @@ class TradingBot:
             if setup:
                 self.logger.info(f"Trend continuation setup detected for {symbol}: {setup}")
                 self.strategy.log_setup(setup)
+                send_telegram_message(f"🎯 TRADE SETUP: {symbol} {setup['direction'].upper()} at ${setup['entry_price']:.4f}")
                 
                 # Execute trade
                 await self.execute_trade(symbol, setup, current_price)
@@ -214,6 +220,11 @@ class TradingBot:
                 self.trades_today += 1
                 self.logger.info(f"Trade executed: {self.current_position}")
                 
+                # Send trade execution notification
+                send_telegram_message(
+                    f"📈 TRADE EXECUTED: {symbol} {setup['direction'].upper()} at ${setup['entry_price']:.4f} | Stop: ${final_stop:.4f} | Size: {position_size:.4f} | Leverage: {leverage}x"
+                )
+                
                 # Place take profit order
                 if setup['take_profit']:
                     tp_order = self.client.place_order(
@@ -240,8 +251,10 @@ class TradingBot:
             stop_loss = self.current_position['stop_loss']
             # Only exit if stop loss is hit
             if direction == 'long' and current_price <= stop_loss:
+                send_telegram_message(f"🛑 STOP LOSS HIT: {self.current_position['symbol']} LONG at ${stop_loss:.4f}")
                 await self.close_position(stop_loss, "Stop Loss Hit")
             elif direction == 'short' and current_price >= stop_loss:
+                send_telegram_message(f"🛑 STOP LOSS HIT: {self.current_position['symbol']} SHORT at ${stop_loss:.4f}")
                 await self.close_position(stop_loss, "Stop Loss Hit")
         except Exception as e:
             self.logger.error(f"Error checking exit conditions: {e}")
@@ -277,6 +290,16 @@ class TradingBot:
             if 'error' not in close_order:
                 self.logger.info(f"Position closed: {reason}")
                 self.logger.info(f"P&L: ${pnl_dollar:.2f}, Daily P&L: ${self.daily_pnl:.2f}")
+                
+                # Send position close notification
+                send_telegram_message(
+                    f"📉 POSITION CLOSED: {symbol} {self.current_position['direction'].upper()} | Entry: ${self.current_position['entry_price']:.4f} | Exit: ${current_price:.4f} | P&L: ${pnl_dollar:.2f}"
+                )
+                
+                # Send balance update
+                send_telegram_message(
+                    f"💰 BALANCE UPDATE: Daily P&L: ${self.daily_pnl:.2f} | Trades Today: {self.trades_today}"
+                )
                 
                 # Reset position
                 self.current_position = None
@@ -369,6 +392,7 @@ class TradingBot:
     async def stop(self):
         """Stop the trading bot"""
         self.logger.info("Stopping trading bot...")
+        send_telegram_message(f"🛑 LIVE BOT STOPPED: Daily P&L: ${self.daily_pnl:.2f} | Trades: {self.trades_today}")
         self.is_running = False
         
         # Close any open positions
