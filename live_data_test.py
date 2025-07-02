@@ -225,6 +225,11 @@ class PaperTradingBot:
                 f"Trade CLOSED: {symbol} {position['direction'].upper()} | Entry: ${position['entry_price']:.4f} | Exit: ${current_price:.4f} | P&L: ${pnl_dollar:.2f}"
             )
             
+            # Send balance update after every trade
+            send_telegram_message(
+                f"💰 BALANCE UPDATE: ${self.paper_balance:.2f} | Total P&L: ${self.total_pnl:.2f} | Trades: {self.total_trades} | Win Rate: {(self.winning_trades / self.total_trades * 100):.1f}%"
+            )
+            
         except Exception as e:
             self.logger.error(f"Error closing paper position: {e}")
     
@@ -247,6 +252,7 @@ class PaperTradingBot:
         # Debug: Show trailing stop updates (always show, not just when changed)
         if position['stop_loss'] != old_stop_loss:
             self.logger.info(f"🔄 TRAILING STOP UPDATED for {symbol}: ${old_stop_loss:.4f} → ${position['stop_loss']:.4f}")
+            send_telegram_message(f"🔄 TRAILING STOP: {symbol} ${old_stop_loss:.4f} → ${position['stop_loss']:.4f}")
         else:
             # Show current stop status even when not changed
             if cycle_count % 10 == 0:  # Show every 10 cycles to avoid spam
@@ -255,10 +261,12 @@ class PaperTradingBot:
         # Check if stop loss is hit
         if direction == 'long' and current_low <= position['stop_loss']:
             self.logger.info(f"🛑 STOP LOSS HIT for {symbol} LONG: Low ${current_low:.4f} <= Stop ${position['stop_loss']:.4f}")
+            send_telegram_message(f"🛑 STOP LOSS HIT: {symbol} LONG at ${position['stop_loss']:.4f}")
             self.close_paper_position(symbol, position['stop_loss'], "Stop Loss Hit")
             self.last_stop_idx[symbol] = candle_idx
         elif direction == 'short' and current_high >= position['stop_loss']:
             self.logger.info(f"🛑 STOP LOSS HIT for {symbol} SHORT: High ${current_high:.4f} >= Stop ${position['stop_loss']:.4f}")
+            send_telegram_message(f"🛑 STOP LOSS HIT: {symbol} SHORT at ${position['stop_loss']:.4f}")
             self.close_paper_position(symbol, position['stop_loss'], "Stop Loss Hit")
             self.last_stop_idx[symbol] = candle_idx
     
@@ -350,6 +358,11 @@ class PaperTradingBot:
         self.logger.info(f"Starting balance: ${self.paper_balance:.2f}")
         self.logger.info(f"Risk per trade: ${self.config['RISK_PER_TRADE']}")
         
+        # Send startup notification
+        send_telegram_message(
+            f"🚀 BOT STARTED: Trading {', '.join(self.config['SYMBOLS'])} | Balance: ${self.paper_balance:.2f} | Risk: ${self.config['RISK_PER_TRADE']}"
+        )
+        
         candle_idx = 0  # Track candle index for cooldown
         cycle_count = 0
         
@@ -363,6 +376,12 @@ class PaperTradingBot:
                 cycle_count += 1
                 if cycle_count % 20 == 0:  # Log every 20 cycles (about 10 minutes)
                     self.logger.info(f"🔄 Paper trading cycle {cycle_count} - Balance: ${self.paper_balance:.2f}, Total P&L: ${self.total_pnl:.2f}")
+                    # Send periodic balance update
+                    if self.total_trades > 0:
+                        win_rate = (self.winning_trades / self.total_trades * 100)
+                        send_telegram_message(
+                            f"📊 PERIODIC UPDATE: Balance: ${self.paper_balance:.2f} | P&L: ${self.total_pnl:.2f} | Trades: {self.total_trades} | Win Rate: {win_rate:.1f}%"
+                        )
                 
                 try:
                     # Process each symbol
@@ -385,6 +404,7 @@ class PaperTradingBot:
                                 if setup and (candle_idx - self.last_stop_idx[symbol] >= 5):  # Cooldown check
                                     setup['symbol'] = symbol  # Add symbol to setup like backtest
                                     self.logger.info(f"🎯 TRADE SETUP DETECTED for {symbol}: {setup['direction'].upper()} at ${setup['entry_price']:.4f}")
+                                    send_telegram_message(f"🎯 TRADE SETUP: {symbol} {setup['direction'].upper()} at ${setup['entry_price']:.4f}")
                                     self.open_paper_position(symbol, setup, current_price)
                                 elif setup:
                                     self.logger.info(f"⏳ SETUP DETECTED but in cooldown for {symbol} (cooldown: {candle_idx - self.last_stop_idx[symbol]}/5)")
@@ -411,11 +431,13 @@ class PaperTradingBot:
                                         if position['stop_loss'] < new_stop:
                                             position['stop_loss'] = new_stop
                                             self.logger.info(f"🎯 AVAX 3:1 RR TRIGGERED! Stop moved: ${old_stop:.4f} → ${new_stop:.4f} (1:1 RR)")
+                                            send_telegram_message(f"🎯 AVAX 3:1 RR TRIGGERED! Stop moved: ${old_stop:.4f} → ${new_stop:.4f} (1:1 RR)")
                                     else:
                                         new_stop = position['entry_price'] - initial_risk
                                         if position['stop_loss'] > new_stop:
                                             position['stop_loss'] = new_stop
                                             self.logger.info(f"🎯 AVAX 3:1 RR TRIGGERED! Stop moved: ${old_stop:.4f} → ${new_stop:.4f} (1:1 RR)")
+                                            send_telegram_message(f"🎯 AVAX 3:1 RR TRIGGERED! Stop moved: ${old_stop:.4f} → ${new_stop:.4f} (1:1 RR)")
                             
                             # Print summary for this symbol (less frequently to avoid spam)
                             if cycle_count % 5 == 0:  # Print every 5 cycles (about 2.5 minutes)
