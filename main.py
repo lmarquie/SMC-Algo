@@ -131,6 +131,29 @@ class TradingBot:
                 # Small delay between symbols
                 await asyncio.sleep(1)
             
+            # AVAX-specific stop loss move at 3:1 RR
+            if self.current_position and self.current_position.get('symbol') == "AVAX":
+                position = self.current_position
+                initial_risk = abs(position['entry_price'] - position['stop_loss'])
+                if position['direction'] == 'long':
+                    current_profit = self.client.get_current_price("AVAX") - position['entry_price']
+                else:
+                    current_profit = position['entry_price'] - self.client.get_current_price("AVAX")
+                rr_ratio = current_profit / initial_risk if initial_risk > 0 else 0
+
+                # If RR >= 3, move stop loss to 1:1 RR
+                if rr_ratio >= 3:
+                    if position['direction'] == 'long':
+                        new_stop = position['entry_price'] + initial_risk
+                        if position['stop_loss'] < new_stop:
+                            position['stop_loss'] = new_stop
+                            self.logger.info(f"Moved AVAX stop loss to 1:1 RR (${new_stop:.4f}) after reaching 3:1 RR")
+                    else:
+                        new_stop = position['entry_price'] - initial_risk
+                        if position['stop_loss'] > new_stop:
+                            position['stop_loss'] = new_stop
+                            self.logger.info(f"Moved AVAX stop loss to 1:1 RR (${new_stop:.4f}) after reaching 3:1 RR")
+            
         except Exception as e:
             self.logger.error(f"Error in trading cycle: {e}")
     

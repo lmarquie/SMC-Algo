@@ -6,8 +6,9 @@ import logging
 from notifications import send_telegram_message
 
 class FVGStrategy:
-    def __init__(self, config: Dict):
+    def __init__(self, config: Dict, send_notifications: bool = True):
         self.config = config
+        self.send_notifications = send_notifications
         self.analyzer = StructureAnalyzer(lookback=config.get('BOS_LOOKBACK', 10))
         self.active_fvgs = []
         self.last_analysis_time = None
@@ -396,13 +397,20 @@ class FVGStrategy:
         
         # Only update trailing stop if R:R > 0.5:1 (start trailing earlier)
         if current_profit <= current_risk * 0.5:
+            # Debug: Show when trailing is not yet enabled
+            if 'trailing_enabled' not in position:
+                rr_ratio = current_profit / current_risk if current_risk > 0 else 0
+                self.logger.debug(f"⏳ Trailing not yet enabled - R:R = {rr_ratio:.2f} (need > 0.5). Profit: ${current_profit:.4f}, Risk: ${current_risk:.4f}")
             return False  # Keep static stop until slightly profitable
         
         # Store original static stop if not already stored
         if 'original_stop_loss' not in position:
             position['original_stop_loss'] = position['stop_loss']
             position['trailing_enabled'] = True
-            self.logger.info(f"🎯 Trailing stop enabled - R:R now > 0.5:1. Profit: ${current_profit:.2f}, Risk: ${current_risk:.2f}")
+            rr_ratio = current_profit / current_risk if current_risk > 0 else 0
+            self.logger.info(f"🎯 TRAILING STOP ENABLED! R:R = {rr_ratio:.2f} > 0.5. Profit: ${current_profit:.4f}, Risk: ${current_risk:.4f}")
+            if self.send_notifications:
+                send_telegram_message(f"🎯 Trailing stop ENABLED for {position.get('symbol', 'UNKNOWN')} - R:R = {rr_ratio:.2f}")
         
         # Now update trailing stop based on structure
         df_analyzed = self.analyzer.analyze_structure(df)
@@ -420,16 +428,13 @@ class FVGStrategy:
                 best_swing_low = swing_lows['swing_low'].max()
                 # Tighter stop distance - closer to swing low for faster trailing
                 new_stop = best_swing_low - self.config.get('STOP_LOSS_BUFFER', 0.005)
-                
                 # Only move stop up (more favorable) - NEVER move down for longs
                 if new_stop > position['stop_loss']:
                     # Check if price has stayed above the swing low for required number of candles
                     confirmation_candles = self.config.get('TRAILING_CONFIRMATION_CANDLES', 3)
                     swing_low_idx = swing_lows.index[-1]
-                    
                     # Get candles after the swing low
                     candles_after_swing = df_analyzed.loc[swing_low_idx:].tail(confirmation_candles + 1)  # +1 to include swing candle
-                    
                     # Check if all candles after swing low have stayed above it
                     if len(candles_after_swing) >= confirmation_candles:
                         low_crossed = False
@@ -437,17 +442,24 @@ class FVGStrategy:
                             if candle['low'] <= best_swing_low:
                                 low_crossed = True
                                 break
-                        
                         if not low_crossed:
-                            position['stop_loss'] = new_stop
-                            position['last_stop_update_idx'] = swing_lows.index[-1]
-                            updated = True
-                            self.logger.info(f"📈 Trailing stop moved up to: ${new_stop:.4f} (swing low: ${best_swing_low:.4f}, confirmed after {confirmation_candles} candles)")
-                            send_telegram_message(
-                                f"Trailing STOP MOVED for {position.get('symbol', 'UNKNOWN')}: New Stop: ${position['stop_loss']:.4f}"
-                            )
+                            if position['stop_loss'] != new_stop:
+                                position['stop_loss'] = new_stop
+                                position['last_stop_update_idx'] = swing_lows.index[-1]
+                                updated = True
+                                old_stop = position['stop_loss']
+                                self.logger.info(f"📈 TRAILING STOP TRIGGERED! ${old_stop:.4f} → ${new_stop:.4f} (swing low: ${best_swing_low:.4f}, confirmed after {confirmation_candles} candles)")
+                                if self.send_notifications:
+                                    send_telegram_message(
+                                        f"📈 TRAILING STOP MOVED for {position.get('symbol', 'UNKNOWN')}: ${old_stop:.4f} → ${new_stop:.4f}"
+                                    )
                         else:
                             self.logger.debug(f"📈 Trailing stop not updated - price crossed back below swing low ${best_swing_low:.4f}")
+                        # Debug prints only when candles_after_swing exists
+                        print("Swing lows:", swing_lows)
+                        print("Best swing low:", best_swing_low)
+                        print("New stop:", new_stop)
+                        print("Lows of confirmation candles:", candles_after_swing['low'].tolist())
                     else:
                         self.logger.debug(f"📈 Trailing stop not updated - not enough candles after swing low (need {confirmation_candles})")
                 else:
@@ -463,16 +475,13 @@ class FVGStrategy:
                 best_swing_high = swing_highs['swing_high'].min()
                 # Tighter stop distance - closer to swing high for faster trailing
                 new_stop = best_swing_high + self.config.get('STOP_LOSS_BUFFER', 0.005)
-                
                 # Only move stop down (more favorable) - NEVER move up for shorts
                 if new_stop < position['stop_loss']:
                     # Check if price has stayed below the swing high for required number of candles
                     confirmation_candles = self.config.get('TRAILING_CONFIRMATION_CANDLES', 3)
                     swing_high_idx = swing_highs.index[-1]
-                    
                     # Get candles after the swing high
                     candles_after_swing = df_analyzed.loc[swing_high_idx:].tail(confirmation_candles + 1)  # +1 to include swing candle
-                    
                     # Check if all candles after swing high have stayed below it
                     if len(candles_after_swing) >= confirmation_candles:
                         high_crossed = False
@@ -480,26 +489,29 @@ class FVGStrategy:
                             if candle['high'] >= best_swing_high:
                                 high_crossed = True
                                 break
-                        
                         if not high_crossed:
-                            position['stop_loss'] = new_stop
-                            position['last_stop_update_idx'] = swing_highs.index[-1]
-                            updated = True
-                            self.logger.info(f"📉 Trailing stop moved down to: ${new_stop:.4f} (swing high: ${best_swing_high:.4f}, confirmed after {confirmation_candles} candles)")
-                            send_telegram_message(
-                                f"Trailing STOP MOVED for {position.get('symbol', 'UNKNOWN')}: New Stop: ${position['stop_loss']:.4f}"
-                            )
+                            if position['stop_loss'] != new_stop:
+                                position['stop_loss'] = new_stop
+                                position['last_stop_update_idx'] = swing_highs.index[-1]
+                                updated = True
+                                old_stop = position['stop_loss']
+                                self.logger.info(f"📉 TRAILING STOP TRIGGERED! ${old_stop:.4f} → ${new_stop:.4f} (swing high: ${best_swing_high:.4f}, confirmed after {confirmation_candles} candles)")
+                                if self.send_notifications:
+                                    send_telegram_message(
+                                        f"📉 TRAILING STOP MOVED for {position.get('symbol', 'UNKNOWN')}: ${old_stop:.4f} → ${new_stop:.4f}"
+                                    )
                         else:
                             self.logger.debug(f"📉 Trailing stop not updated - price crossed back above swing high ${best_swing_high:.4f}")
+                        # Debug prints only when candles_after_swing exists
+                        print("Swing highs:", swing_highs)
+                        print("Best swing high:", best_swing_high)
+                        print("New stop:", new_stop)
+                        print("Highs of confirmation candles:", candles_after_swing['high'].tolist())
                     else:
                         self.logger.debug(f"📉 Trailing stop not updated - not enough candles after swing high (need {confirmation_candles})")
                 else:
                     self.logger.debug(f"📉 Trailing stop not updated - new stop ${new_stop:.4f} >= current stop ${position['stop_loss']:.4f}")
         
         print("Current stop:", position['stop_loss'])
-        print("Swing highs:", swing_highs)
-        print("Best swing high:", best_swing_high)
-        print("New stop:", new_stop)
-        print("Highs of confirmation candles:", candles_after_swing['high'].tolist())
         
         return updated 

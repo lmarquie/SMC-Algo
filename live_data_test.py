@@ -228,22 +228,39 @@ class PaperTradingBot:
         except Exception as e:
             self.logger.error(f"Error closing paper position: {e}")
     
-    def check_position_exits(self, symbol, current_price, current_low, current_high):
-        """Check if current position should be closed for a specific symbol"""
+    def check_position_exits(self, symbol, current_price, current_low, current_high, candle_idx, ltf_data, cycle_count):
+        """Check if current position should be closed for a specific symbol - using backtest logic"""
         if symbol not in self.current_positions:
             return
         
         position = self.current_positions[symbol]
         direction = position['direction']
-        stop_loss = position['stop_loss']
+        old_stop_loss = position['stop_loss']
         
-        # Check stop loss ONLY
-        if direction == 'long' and current_low <= stop_loss:
-            self.close_paper_position(symbol, stop_loss, "Stop Loss Hit")
-            self.last_stop_idx[symbol] = self.candle_idx if hasattr(self, 'candle_idx') else 0
-        elif direction == 'short' and current_high >= stop_loss:
-            self.close_paper_position(symbol, stop_loss, "Stop Loss Hit")
-            self.last_stop_idx[symbol] = self.candle_idx if hasattr(self, 'candle_idx') else 0
+        # Debug: Show when we're checking trailing stops
+        if cycle_count % 5 == 0:  # Show every 5 cycles
+            self.logger.info(f"🔍 CHECKING TRAILING STOPS for {symbol} - Current stop: ${old_stop_loss:.4f}")
+        
+        # Update trailing stop BEFORE checking stop loss (like backtest)
+        self.strategy.update_trailing_stop(ltf_data, position)
+        
+        # Debug: Show trailing stop updates (always show, not just when changed)
+        if position['stop_loss'] != old_stop_loss:
+            self.logger.info(f"🔄 TRAILING STOP UPDATED for {symbol}: ${old_stop_loss:.4f} → ${position['stop_loss']:.4f}")
+        else:
+            # Show current stop status even when not changed
+            if cycle_count % 10 == 0:  # Show every 10 cycles to avoid spam
+                self.logger.info(f"📊 {symbol} STOP STATUS: Current stop: ${position['stop_loss']:.4f} (unchanged)")
+        
+        # Check if stop loss is hit
+        if direction == 'long' and current_low <= position['stop_loss']:
+            self.logger.info(f"🛑 STOP LOSS HIT for {symbol} LONG: Low ${current_low:.4f} <= Stop ${position['stop_loss']:.4f}")
+            self.close_paper_position(symbol, position['stop_loss'], "Stop Loss Hit")
+            self.last_stop_idx[symbol] = candle_idx
+        elif direction == 'short' and current_high >= position['stop_loss']:
+            self.logger.info(f"🛑 STOP LOSS HIT for {symbol} SHORT: High ${current_high:.4f} >= Stop ${position['stop_loss']:.4f}")
+            self.close_paper_position(symbol, position['stop_loss'], "Stop Loss Hit")
+            self.last_stop_idx[symbol] = candle_idx
     
     def analyze_live_market(self, symbol, ltf_data, htf_data, current_price):
         """Analyze live market conditions for a specific symbol"""
@@ -359,19 +376,51 @@ class PaperTradingBot:
                             current_low = current_candle['low']
                             current_high = current_candle['high']
                             
-                            # Check position exits first
-                            self.check_position_exits(symbol, current_price, current_low, current_high)
+                            # Check position exits first (using backtest logic)
+                            self.check_position_exits(symbol, current_price, current_low, current_high, candle_idx, ltf_data, cycle_count)
                             
-                            # Analyze market
-                            trend_info, setup = self.analyze_live_market(symbol, ltf_data, htf_data, current_price)
+                            # Check for new entry if no position (like backtest)
+                            if symbol not in self.current_positions:
+                                setup = self.strategy.check_entry_conditions(ltf_data, htf_data)
+                                if setup and (candle_idx - self.last_stop_idx[symbol] >= 5):  # Cooldown check
+                                    setup['symbol'] = symbol  # Add symbol to setup like backtest
+                                    self.logger.info(f"🎯 TRADE SETUP DETECTED for {symbol}: {setup['direction'].upper()} at ${setup['entry_price']:.4f}")
+                                    self.open_paper_position(symbol, setup, current_price)
+                                elif setup:
+                                    self.logger.info(f"⏳ SETUP DETECTED but in cooldown for {symbol} (cooldown: {candle_idx - self.last_stop_idx[symbol]}/5)")
                             
-                            # Open new position if setup detected, not in position, and cooldown passed
-                            if setup and symbol not in self.current_positions and (candle_idx - self.last_stop_idx[symbol] >= 5):
-                                self.open_paper_position(symbol, setup, current_price)
+                            # AVAX-specific stop loss move at 3:1 RR (like backtest)
+                            if symbol == "AVAX" and symbol in self.current_positions:
+                                position = self.current_positions[symbol]
+                                initial_risk = abs(position['entry_price'] - position['stop_loss'])
+                                if position['direction'] == 'long':
+                                    current_profit = current_price - position['entry_price']
+                                else:
+                                    current_profit = position['entry_price'] - current_price
+                                rr_ratio = current_profit / initial_risk if initial_risk > 0 else 0
+
+                                # Debug: Show R:R ratio every cycle for AVAX
+                                if cycle_count % 3 == 0:  # Show every 3 cycles to avoid spam
+                                    self.logger.info(f"📊 AVAX R:R DEBUG: Current R:R = {rr_ratio:.2f} | Profit: ${current_profit:.4f} | Risk: ${initial_risk:.4f}")
+
+                                # If RR >= 3, move stop loss to 1:1 RR
+                                if rr_ratio >= 3:
+                                    old_stop = position['stop_loss']
+                                    if position['direction'] == 'long':
+                                        new_stop = position['entry_price'] + initial_risk
+                                        if position['stop_loss'] < new_stop:
+                                            position['stop_loss'] = new_stop
+                                            self.logger.info(f"🎯 AVAX 3:1 RR TRIGGERED! Stop moved: ${old_stop:.4f} → ${new_stop:.4f} (1:1 RR)")
+                                    else:
+                                        new_stop = position['entry_price'] - initial_risk
+                                        if position['stop_loss'] > new_stop:
+                                            position['stop_loss'] = new_stop
+                                            self.logger.info(f"🎯 AVAX 3:1 RR TRIGGERED! Stop moved: ${old_stop:.4f} → ${new_stop:.4f} (1:1 RR)")
                             
                             # Print summary for this symbol (less frequently to avoid spam)
                             if cycle_count % 5 == 0:  # Print every 5 cycles (about 2.5 minutes)
-                                self.print_paper_trading_summary(symbol, current_price, trend_info, setup)
+                                trend_info = self.strategy.identify_larger_trend(htf_data)
+                                self.print_paper_trading_summary(symbol, current_price, trend_info, setup if symbol not in self.current_positions else None)
                         
                         # Small delay between symbols
                         await asyncio.sleep(2)

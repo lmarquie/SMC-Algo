@@ -18,7 +18,7 @@ from hyperliquid_client import HyperliquidClient
 class RealDataBacktester:
     def __init__(self, config: Dict):
         self.config = config
-        self.strategy = FVGStrategy(config)
+        self.strategy = FVGStrategy(config, send_notifications=False)
         self.analyzer = StructureAnalyzer(lookback=config.get('BOS_LOOKBACK', 10))
         
         # Initialize Hyperliquid Info client with error handling
@@ -260,26 +260,48 @@ class RealDataBacktester:
             if self.current_position:
                 stop_loss = self.current_position['stop_loss']
                 direction = self.current_position['direction']
+                
+                # Update trailing stop BEFORE checking stop loss
+                self.strategy.update_trailing_stop(current_data, self.current_position)
+                
+                # Check if stop loss is hit
                 if direction == 'long' and current_low <= stop_loss:
-                    self._close_position(stop_loss, current_candle.name, "Stop Loss Hit")
-                    self.last_stop_idx = i  # Set cooldown
+                    self._close_position(stop_loss, current_candle.name, "Stop Loss")
                 elif direction == 'short' and current_high >= stop_loss:
-                    self._close_position(stop_loss, current_candle.name, "Stop Loss Hit")
-                    self.last_stop_idx = i  # Set cooldown
+                    self._close_position(stop_loss, current_candle.name, "Stop Loss")
             
-            # Check for new entry if no position and cooldown passed
-            if not self.current_position and (i - self.last_stop_idx >= 5):
+            # Check for new entry if no position
+            if not self.current_position:
                 setup = self._check_entry_setup(current_data, current_htf_data, current_price)
                 if setup:
+                    setup['symbol'] = symbol  # Add symbol to setup
                     self._open_position(setup, current_price, current_candle.name)
+            
+            # AVAX-specific stop loss move at 3:1 RR
+            if self.current_position and self.current_position.get('symbol') == "AVAX":
+                position = self.current_position
+                initial_risk = abs(position['entry_price'] - position['stop_loss'])
+                if position['direction'] == 'long':
+                    current_profit = current_price - position['entry_price']
+                else:
+                    current_profit = position['entry_price'] - current_price
+                rr_ratio = current_profit / initial_risk if initial_risk > 0 else 0
+
+                # If RR >= 3, move stop loss to 1:1 RR
+                if rr_ratio >= 3:
+                    if position['direction'] == 'long':
+                        new_stop = position['entry_price'] + initial_risk
+                        if position['stop_loss'] < new_stop:
+                            position['stop_loss'] = new_stop
+                            self.logger.info(f"Moved AVAX stop loss to 1:1 RR (${new_stop:.4f}) after reaching 3:1 RR")
+                    else:
+                        new_stop = position['entry_price'] - initial_risk
+                        if position['stop_loss'] > new_stop:
+                            position['stop_loss'] = new_stop
+                            self.logger.info(f"Moved AVAX stop loss to 1:1 RR (${new_stop:.4f}) after reaching 3:1 RR")
             
             # Only update equity curve if in position
             self._update_equity_curve(current_price, current_candle.name)
-            
-            # After stop loss check, if position still exists, update trailing stop
-            if self.current_position:
-                # Update trailing stop
-                self.strategy.update_trailing_stop(current_data, self.current_position)
         
         # Close any remaining position
         if self.current_position:
@@ -336,6 +358,9 @@ class RealDataBacktester:
                 stop_loss = self.current_position['stop_loss']
                 direction = self.current_position['direction']
                 
+                # Update trailing stop BEFORE checking stop loss
+                self.strategy.update_trailing_stop(current_data, self.current_position)
+                
                 # Check if stop loss is hit
                 if direction == 'long' and current_low <= stop_loss:
                     self._close_position(stop_loss, current_candle.name, "Stop Loss")
@@ -346,6 +371,7 @@ class RealDataBacktester:
             if not self.current_position:
                 setup = self._check_entry_setup(current_data, current_htf_data, current_price)
                 if setup:
+                    setup['symbol'] = symbol  # Add symbol to setup
                     self._open_position(setup, current_price, current_candle.name)
             
             # Only update equity curve if in position
@@ -823,7 +849,7 @@ async def run_real_data_backtest():
         print(f"{'='*80}")
         
         # Reset strategy state for each symbol
-        backtester.strategy = FVGStrategy(config)  # Fresh strategy instance
+        backtester.strategy = FVGStrategy(config, send_notifications=False)  # Fresh strategy instance
         backtester.current_position = None
         backtester.trades = []
         backtester.equity_curve = []
