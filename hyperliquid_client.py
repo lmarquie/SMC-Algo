@@ -6,6 +6,7 @@ import pandas as pd
 from typing import Dict, List, Optional
 import logging
 from datetime import datetime, timedelta
+from notifications import send_telegram_message
 
 class HyperliquidClient:
     def __init__(self, api_key: str, subaccount: str = "default"):
@@ -104,9 +105,14 @@ class HyperliquidClient:
     def place_order(self, symbol: str, side: str, size: float, 
                    order_type: str = "market", price: Optional[float] = None,
                    stop_loss: Optional[float] = None, take_profit: Optional[float] = None,
-                   leverage: int = 20) -> Dict:
+                   leverage: int = None) -> Dict:
         """Place an order on Hyperliquid with leverage"""
         try:
+            # If leverage not provided, get from config based on symbol
+            if leverage is None:
+                from config import MAX_LEVERAGE
+                leverage = MAX_LEVERAGE.get(symbol, 20)  # Default to 20x if not found
+            
             url = f"{self.base_url}/exchange"
             
             order_data = {
@@ -134,6 +140,9 @@ class HyperliquidClient:
             
             result = response.json()
             self.logger.info(f"Order placed with {leverage}x leverage: {result}")
+            send_telegram_message(
+                f"Trade OPENED: {symbol} {side.upper()} at ${price:.4f} | Stop: ${stop_loss:.4f} | Leverage: {leverage}x"
+            )
             return result
             
         except Exception as e:
@@ -258,4 +267,5 @@ class HyperliquidClient:
     def close(self):
         """Close the client connection"""
         if hasattr(self, 'session'):
-            self.session.close() 
+            self.session.close()
+

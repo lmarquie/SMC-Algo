@@ -5,6 +5,7 @@ import logging
 from trading_strategy import FVGStrategy
 from hyperliquid_client import HyperliquidClient
 from config import *
+from notifications import send_telegram_message
 
 class PaperTradingBot:
     def __init__(self):
@@ -19,7 +20,8 @@ class PaperTradingBot:
             'DISPLACEMENT_THRESHOLD': DISPLACEMENT_THRESHOLD,
             'STOP_LOSS_BUFFER': STOP_LOSS_BUFFER,
             'TAKE_PROFIT_RATIO': TAKE_PROFIT_RATIO,
-            'RISK_PER_TRADE': RISK_PER_TRADE
+            'RISK_PER_TRADE': RISK_PER_TRADE,
+            'MAX_LEVERAGE': MAX_LEVERAGE  # Add leverage mapping from config
         }
         
         self.client = HyperliquidClient(
@@ -49,18 +51,18 @@ class PaperTradingBot:
         try:
             self.logger.info(f"Fetching live data for {symbol}...")
             
-            # Fetch LTF data (1m)
+            # Fetch LTF data (1m) - increase to 1000 candles
             ltf_data = await self.client.get_ohlcv(
                 symbol=symbol,
                 timeframe=self.config['TIMEFRAME'],
-                limit=200
+                limit=1000  # Increased from 200
             )
             
-            # Fetch HTF data (15m)
+            # Fetch HTF data (15m) - increase to 500 candles
             htf_data = await self.client.get_ohlcv(
                 symbol=symbol,
                 timeframe=self.config['HTF_TIMEFRAME'],
-                limit=100
+                limit=500  # Increased from 100
             )
             
             # Get current price
@@ -76,7 +78,7 @@ class PaperTradingBot:
             self.logger.error(f"Error fetching live data for {symbol}: {e}")
             return None, None, None
     
-    def calculate_position_size(self, entry_price, stop_loss, direction):
+    def calculate_position_size(self, entry_price, stop_loss, direction, symbol):
         """Calculate position size based on risk per trade with capital and leverage constraints"""
         risk_amount = abs(entry_price - stop_loss)
         position_size = self.config['RISK_PER_TRADE'] / risk_amount
@@ -84,8 +86,11 @@ class PaperTradingBot:
         # Calculate position value (size × entry price)
         position_value = position_size * entry_price
         
-        # Capital constraints: $10,000 capital with 50x leverage = $500,000 max position value
-        max_position_value = 10000 * 50  # $500,000
+        # Get leverage for this symbol
+        leverage = self.config['MAX_LEVERAGE'].get(symbol, 20)  # Default to 20x if not found
+        
+        # Capital constraints: $10,000 capital with leverage = max position value
+        max_position_value = 10000 * leverage  # Dynamic based on symbol leverage
         
         # Check if position value exceeds maximum allowed
         if position_value > max_position_value:
@@ -126,10 +131,13 @@ class PaperTradingBot:
             return False
         
         try:
-            position_size, adjusted_stop = self.calculate_position_size(setup['entry_price'], setup['stop_loss'], setup['direction'])
+            position_size, adjusted_stop = self.calculate_position_size(setup['entry_price'], setup['stop_loss'], setup['direction'], symbol)
             
             # Use adjusted stop if it was changed
             final_stop = adjusted_stop if adjusted_stop != setup['stop_loss'] else setup['stop_loss']
+            
+            # Get leverage for this symbol
+            leverage = self.config['MAX_LEVERAGE'].get(symbol, 20)  # Default to 20x if not found
             
             self.current_positions[symbol] = {
                 'direction': setup['direction'],
@@ -138,16 +146,22 @@ class PaperTradingBot:
                 'take_profit': setup.get('take_profit'),
                 'size': position_size,
                 'entry_time': datetime.now(),
-                'reason': setup['reason']
+                'reason': setup['reason'],
+                'leverage': leverage  # Store leverage for reference
             }
             
             self.logger.info(f"📈 PAPER POSITION OPENED FOR {symbol}:")
             self.logger.info(f"  Direction: {setup['direction'].upper()}")
             self.logger.info(f"  Entry: ${setup['entry_price']:.4f}")
             self.logger.info(f"  Stop: ${setup['stop_loss']:.4f}")
-            self.logger.info(f"  Target: ${setup['take_profit']:.4f}")
+            self.logger.info(f"  Target: {setup['take_profit'] if setup['take_profit'] is not None else 'None'}")
             self.logger.info(f"  Size: {position_size:.4f}")
             self.logger.info(f"  Risk: ${self.config['RISK_PER_TRADE']}")
+            self.logger.info(f"  Leverage: {leverage}x")
+            
+            send_telegram_message(
+                f"Trade OPENED: {symbol} {setup['direction'].upper()} at ${setup['entry_price']:.4f} | Stop: ${setup['stop_loss']:.4f} | Leverage: {leverage}x"
+            )
             
             return True
             
@@ -206,6 +220,10 @@ class PaperTradingBot:
             
             # Reset position
             del self.current_positions[symbol]
+            
+            send_telegram_message(
+                f"Trade CLOSED: {symbol} {position['direction'].upper()} | Entry: ${position['entry_price']:.4f} | Exit: ${current_price:.4f} | P&L: ${pnl_dollar:.2f}"
+            )
             
         except Exception as e:
             self.logger.error(f"Error closing paper position: {e}")
@@ -278,7 +296,7 @@ class PaperTradingBot:
             
             # Determine stop loss status
             rr_ratio = current_profit / current_risk if current_risk > 0 else 0
-            stop_status = "TRAILING" if rr_ratio > 1.0 else "STATIC ($250)"
+            stop_status = "TRAILING" if rr_ratio > 1.0 else "STATIC ($150)"
             
             print(f"\n🎯 ACTIVE POSITION:")
             print(f"  Direction: {position['direction'].upper()}")
@@ -287,68 +305,86 @@ class PaperTradingBot:
             print(f"  Unrealized P&L: {unrealized_pnl:.2%} (${unrealized_dollar:.2f})")
             print(f"  R:R Ratio: {rr_ratio:.2f}")
             print(f"  Stop: ${position['stop_loss']:.4f} ({stop_status})")
-            print(f"  Target: ${position['take_profit']:.4f}")
+            print(f"  Target: {position['take_profit'] if position['take_profit'] is not None else 'None'}")
         elif setup:
             print(f"\n🎯 TRADE SETUP DETECTED:")
             print(f"  Direction: {setup['direction'].upper()}")
             print(f"  Entry: ${setup['entry_price']:.4f}")
             print(f"  Stop: ${setup['stop_loss']:.4f}")
-            print(f"  Target: ${setup['take_profit']:.4f}")
+            print(f"  Target: {setup['take_profit'] if setup['take_profit'] is not None else 'None'}")
             print(f"  Reason: {setup['reason']}")
         else:
             print(f"\n❌ No active position or trade setup")
         
         print("="*50)
     
-    async def run_paper_trading(self, duration_minutes=60):
-        """Run paper trading for specified duration"""
-        self.logger.info(f"🚀 Starting multi-symbol paper trading for {duration_minutes} minutes...")
+    async def run_paper_trading(self, duration_minutes=None):
+        """Run paper trading indefinitely or for specified duration"""
+        if duration_minutes:
+            self.logger.info(f"🚀 Starting multi-symbol paper trading for {duration_minutes} minutes...")
+            start_time = datetime.now()
+            end_time = start_time + timedelta(minutes=duration_minutes)
+        else:
+            self.logger.info(f"🚀 Starting multi-symbol paper trading INDEFINITELY...")
+            self.logger.info("Press Ctrl+C to stop the bot")
+            end_time = None
+        
         self.logger.info(f"Trading symbols: {', '.join(self.config['SYMBOLS'])}")
         self.logger.info(f"Starting balance: ${self.paper_balance:.2f}")
         self.logger.info(f"Risk per trade: ${self.config['RISK_PER_TRADE']}")
         
-        start_time = datetime.now()
-        end_time = start_time + timedelta(minutes=duration_minutes)
-        
         candle_idx = 0  # Track candle index for cooldown
-        while datetime.now() < end_time:
-            try:
-                # Process each symbol
-                for symbol in self.config['SYMBOLS']:
-                    # Fetch live data for this symbol
-                    ltf_data, htf_data, current_price = await self.fetch_live_data(symbol)
-                    
-                    if ltf_data is not None and current_price is not None:
-                        # Get current candle info for stop loss checks
-                        current_candle = ltf_data.iloc[-1]
-                        current_low = current_candle['low']
-                        current_high = current_candle['high']
-                        
-                        # Check position exits first
-                        self.check_position_exits(symbol, current_price, current_low, current_high)
-                        
-                        # Analyze market
-                        trend_info, setup = self.analyze_live_market(symbol, ltf_data, htf_data, current_price)
-                        
-                        # Open new position if setup detected, not in position, and cooldown passed
-                        if setup and symbol not in self.current_positions and (candle_idx - self.last_stop_idx[symbol] >= 5):
-                            self.open_paper_position(symbol, setup, current_price)
-                        
-                        # Print summary for this symbol
-                        self.print_paper_trading_summary(symbol, current_price, trend_info, setup)
-                    
-                    # Small delay between symbols
-                    await asyncio.sleep(2)
-                candle_idx += 1
-                # Wait before next cycle
-                await asyncio.sleep(30)  # Check every 30 seconds
+        cycle_count = 0
+        
+        try:
+            while True:  # Run indefinitely
+                # Check if we have a time limit
+                if end_time and datetime.now() >= end_time:
+                    self.logger.info("⏰ Time limit reached - stopping paper trading")
+                    break
                 
-            except KeyboardInterrupt:
-                self.logger.info("Paper trading stopped by user")
-                break
-            except Exception as e:
-                self.logger.error(f"Error in paper trading: {e}")
-                await asyncio.sleep(30)
+                cycle_count += 1
+                if cycle_count % 20 == 0:  # Log every 20 cycles (about 10 minutes)
+                    self.logger.info(f"🔄 Paper trading cycle {cycle_count} - Balance: ${self.paper_balance:.2f}, Total P&L: ${self.total_pnl:.2f}")
+                
+                try:
+                    # Process each symbol
+                    for symbol in self.config['SYMBOLS']:
+                        # Fetch live data for this symbol
+                        ltf_data, htf_data, current_price = await self.fetch_live_data(symbol)
+                        
+                        if ltf_data is not None and current_price is not None:
+                            # Get current candle info for stop loss checks
+                            current_candle = ltf_data.iloc[-1]
+                            current_low = current_candle['low']
+                            current_high = current_candle['high']
+                            
+                            # Check position exits first
+                            self.check_position_exits(symbol, current_price, current_low, current_high)
+                            
+                            # Analyze market
+                            trend_info, setup = self.analyze_live_market(symbol, ltf_data, htf_data, current_price)
+                            
+                            # Open new position if setup detected, not in position, and cooldown passed
+                            if setup and symbol not in self.current_positions and (candle_idx - self.last_stop_idx[symbol] >= 5):
+                                self.open_paper_position(symbol, setup, current_price)
+                            
+                            # Print summary for this symbol (less frequently to avoid spam)
+                            if cycle_count % 5 == 0:  # Print every 5 cycles (about 2.5 minutes)
+                                self.print_paper_trading_summary(symbol, current_price, trend_info, setup)
+                        
+                        # Small delay between symbols
+                        await asyncio.sleep(2)
+                    candle_idx += 1
+                    # Wait before next cycle
+                    await asyncio.sleep(30)  # Check every 30 seconds
+                    
+                except Exception as e:
+                    self.logger.error(f"Error in paper trading cycle: {e}")
+                    await asyncio.sleep(30)  # Wait before retrying
+                    
+        except KeyboardInterrupt:
+            self.logger.info("🛑 Paper trading stopped by user (Ctrl+C)")
         
         # Close any remaining positions
         for symbol in list(self.current_positions.keys()):
@@ -389,16 +425,20 @@ async def main():
     bot = PaperTradingBot()
     
     try:
-        # Run paper trading for 60 minutes (you can change this)
-        await bot.run_paper_trading(duration_minutes=60)
+        # Run paper trading indefinitely (no time limit)
+        await bot.run_paper_trading(duration_minutes=None)
+        
+        # Alternatively, if you want a time limit, uncomment the line below:
+        # await bot.run_paper_trading(duration_minutes=60)  # 60 minutes
     except Exception as e:
         logging.error(f"Main error: {e}")
 
 if __name__ == "__main__":
     print("🚀 Multi-Symbol Paper Trading Bot - No Real Money")
-    print("This bot simulates trading SOL, ETH, and XRP with virtual money.")
+    print("This bot simulates trading SOL and ETH with virtual money.")
     print("Starting balance: $10,000")
-    print("Risk per trade: $250 per symbol")
+    print("Risk per trade: $100 per symbol")
+    print("Bot will run INDEFINITELY until you press Ctrl+C")
     print("Make sure you have set up your Hyperliquid API key in the .env file.")
     print()
     

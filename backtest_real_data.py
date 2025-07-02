@@ -19,7 +19,7 @@ class RealDataBacktester:
     def __init__(self, config: Dict):
         self.config = config
         self.strategy = FVGStrategy(config)
-        self.analyzer = StructureAnalyzer()
+        self.analyzer = StructureAnalyzer(lookback=config.get('BOS_LOOKBACK', 10))
         
         # Initialize Hyperliquid Info client with error handling
         try:
@@ -35,13 +35,16 @@ class RealDataBacktester:
         self.trades = []
         self.equity_curve = []
         self.current_position = None
-        self.initial_balance = config.get('INITIAL_BALANCE', 10000)
+        self.initial_balance = 10000  # $10,000 starting capital
         self.current_balance = self.initial_balance
         self.last_stop_idx = -10  # Track last stop loss exit index for cooldown
         
         # Setup logging
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
+        
+        # Add leverage mapping to config
+        self.config['MAX_LEVERAGE'] = MAX_LEVERAGE
     
     async def fetch_real_data(self, symbol: str, days: int = 30) -> pd.DataFrame:
         """Fetch exactly 5000 candles of real market data"""
@@ -372,7 +375,7 @@ class RealDataBacktester:
         try:
             # Calculate position size
             risk_amount = abs(setup['entry_price'] - setup['stop_loss'])
-            position_size, adjusted_stop = self._calculate_position_size(risk_amount, setup['entry_price'], setup)
+            position_size, adjusted_stop = self._calculate_position_size(risk_amount, setup['entry_price'], setup, setup['symbol'])
             
             # Use adjusted stop if it was changed
             final_stop = adjusted_stop if adjusted_stop != setup['stop_loss'] else setup['stop_loss']
@@ -388,7 +391,8 @@ class RealDataBacktester:
                 'take_profit': setup.get('take_profit'),
                 'size': position_size,
                 'entry_time': timestamp,
-                'reason': setup['reason']
+                'reason': setup['reason'],
+                'symbol': setup['symbol']
             }
             
             self.logger.info(f"Position opened: {self.current_position}")
@@ -445,7 +449,8 @@ class RealDataBacktester:
                 'pnl_pct': pnl_pct,
                 'pnl_dollar': pnl_dollar,
                 'reason': reason,
-                'exit_reason': reason
+                'exit_reason': reason,
+                'symbol': self.current_position['symbol']
             }
             self.trades.append(trade)
             self.logger.info(f"Position closed: {pnl_pct:.4f} ({pnl_dollar:.2f}) - {reason}")
@@ -454,20 +459,22 @@ class RealDataBacktester:
         except Exception as e:
             self.logger.error(f"Error closing position: {e}")
     
-    def _calculate_position_size(self, risk_amount: float, entry_price: float, setup: Dict) -> tuple:
-        """Calculate position size to guarantee $100 risk with capital and leverage constraints"""
-        # We want to risk exactly $100
-        target_risk = 100  # $100 fixed risk
+    def _calculate_position_size(self, risk_amount: float, entry_price: float, setup: Dict, symbol: str = "SOL-USD") -> tuple:
+        """Calculate position size based on risk management rules with capital and leverage constraints"""
+        target_risk = 150  # $150 fixed risk
         
         # Position size = Target Risk / Price Risk per Unit
-        # This guarantees we risk exactly $250
+        # This guarantees we risk exactly $150
         position_size = target_risk / risk_amount
         
         # Calculate position value (size × entry price)
         position_value = position_size * entry_price
         
-        # Capital constraints: $10,000 capital with 50x leverage = $500,000 max position value
-        max_position_value = 10000 * 50  # $500,000
+        # Get leverage for this symbol
+        leverage = self.config['MAX_LEVERAGE'].get(symbol, 20)  # Default to 20x if not found
+        
+        # Capital constraints: $10,000 capital with leverage = max position value
+        max_position_value = 10000 * leverage  # Dynamic based on symbol leverage
         
         # Check if position value exceeds maximum allowed
         if position_value > max_position_value:
@@ -497,7 +504,7 @@ class RealDataBacktester:
                 # If still too large, scale down position size as last resort
                 position_size = max_position_value / entry_price
                 actual_risk = position_size * new_risk_amount
-                self.logger.warning(f"Position size reduced due to capital constraints. Risk: ${actual_risk:.2f} instead of $100")
+                self.logger.warning(f"Position size reduced due to capital constraints. Risk: ${actual_risk:.2f} instead of $150")
                 return position_size, new_stop
         
         return position_size, setup['stop_loss']
@@ -533,7 +540,7 @@ class RealDataBacktester:
                 'avg_loss': 0,
                 'profit_factor': 0,
                 'max_drawdown': 0,
-                'avg_rr': 0,  # Add average R:R
+                'avg_rr': 0,
                 'initial_balance': self.initial_balance,
                 'final_balance': self.current_balance
             }
@@ -591,7 +598,7 @@ class RealDataBacktester:
             'avg_loss': avg_loss,
             'profit_factor': profit_factor,
             'max_drawdown': max_drawdown * 100,
-            'avg_rr': avg_rr,  # Add average R:R
+            'avg_rr': avg_rr,
             'final_balance': self.current_balance,
             'initial_balance': self.initial_balance
         }
@@ -772,7 +779,7 @@ class RealDataBacktester:
         print(f"Average Win: ${results.get('avg_win', 0):.2f}")
         print(f"Average Loss: ${results.get('avg_loss', 0):.2f}")
         print(f"Profit Factor: {results.get('profit_factor', 0):.2f}")
-        print(f"Average R:R: {results.get('avg_rr', 0):.2f}")  # Add average R:R
+        print(f"Average R:R: {results.get('avg_rr', 0):.2f}")
         print(f"Max Drawdown: {results.get('max_drawdown', 0):.2f}%")
         print("="*50)
 
@@ -791,7 +798,7 @@ async def run_real_data_backtest():
         'DISPLACEMENT_THRESHOLD': DISPLACEMENT_THRESHOLD,
         'STOP_LOSS_BUFFER': STOP_LOSS_BUFFER,
         'TAKE_PROFIT_RATIO': TAKE_PROFIT_RATIO,
-        'RISK_PER_TRADE': 250,
+        'RISK_PER_TRADE': RISK_PER_TRADE,
         'TRAILING_CONFIRMATION_CANDLES': TRAILING_CONFIRMATION_CANDLES,
         'DAILY_LOSS_LIMIT': 1000,  # $1000 daily loss limit
         'LEVERAGE': 20,  # 20x leverage
@@ -814,6 +821,12 @@ async def run_real_data_backtest():
         print(f"\n{'='*80}")
         print(f"📊 BACKTESTING {symbol}")
         print(f"{'='*80}")
+        
+        # Reset strategy state for each symbol
+        backtester.strategy = FVGStrategy(config)  # Fresh strategy instance
+        backtester.current_position = None
+        backtester.trades = []
+        backtester.equity_curve = []
         
         trades, equity_curve = await backtester.run_backtest(symbol=symbol, days=7)
         

@@ -23,7 +23,8 @@ class TradingBot:
             'DISPLACEMENT_THRESHOLD': DISPLACEMENT_THRESHOLD,
             'STOP_LOSS_BUFFER': STOP_LOSS_BUFFER,
             'TAKE_PROFIT_RATIO': TAKE_PROFIT_RATIO,
-            'RISK_PER_TRADE': RISK_PER_TRADE
+            'RISK_PER_TRADE': RISK_PER_TRADE,
+            'MAX_LEVERAGE': MAX_LEVERAGE  # Add leverage mapping from config
         }
         
         # Initialize components
@@ -145,10 +146,13 @@ class TradingBot:
         try:
             # Calculate position size based on risk
             risk_amount = abs(setup['entry_price'] - setup['stop_loss'])
-            position_size, adjusted_stop = self.calculate_position_size(risk_amount, setup['entry_price'], setup)
+            position_size, adjusted_stop = self.calculate_position_size(risk_amount, setup['entry_price'], setup, symbol)
             
             # Use adjusted stop if it was changed
             final_stop = adjusted_stop if adjusted_stop != setup['stop_loss'] else setup['stop_loss']
+            
+            # Get leverage for this symbol
+            leverage = self.config['MAX_LEVERAGE'].get(symbol, 20)  # Default to 20x if not found
             
             # Place order
             order_result = self.client.place_order(
@@ -158,7 +162,7 @@ class TradingBot:
                 order_type='market',
                 price=setup['entry_price'],
                 stop_loss=final_stop,
-                leverage=50  # 50x leverage
+                leverage=leverage  # Use symbol-specific leverage
             )
             
             if 'error' not in order_result:
@@ -225,13 +229,17 @@ class TradingBot:
             # Update daily P&L
             self.daily_pnl += pnl_dollar
             
+            # Get leverage for this symbol
+            symbol = self.current_position['symbol']
+            leverage = self.config['MAX_LEVERAGE'].get(symbol, 20)  # Default to 20x if not found
+            
             # Close position
             close_order = self.client.place_order(
-                symbol=self.config['SYMBOL'],
+                symbol=symbol,
                 side='sell' if self.current_position['direction'] == 'long' else 'buy',
                 size=self.current_position['size'],
                 order_type='market',
-                leverage=self.config['LEVERAGE']
+                leverage=leverage  # Use symbol-specific leverage
             )
             
             if 'error' not in close_order:
@@ -246,11 +254,11 @@ class TradingBot:
         except Exception as e:
             self.logger.error(f"Error closing position: {e}")
     
-    def calculate_position_size(self, risk_amount: float, entry_price: float, setup: Dict) -> tuple:
+    def calculate_position_size(self, risk_amount: float, entry_price: float, setup: Dict, symbol: str) -> tuple:
         """Calculate position size based on risk management rules with capital and leverage constraints"""
         try:
             # Use fixed dollar risk instead of percentage
-            max_risk_amount = self.config['RISK_PER_TRADE']  # $100
+            max_risk_amount = self.config['RISK_PER_TRADE']  # $150
             
             # Calculate position size based on dollar risk
             # risk_amount is the price difference between entry and stop
@@ -259,8 +267,11 @@ class TradingBot:
             # Calculate position value (size × entry price)
             position_value = position_size * entry_price
             
-            # Capital constraints: $10,000 capital with 50x leverage = $500,000 max position value
-            max_position_value = 10000 * 50  # $500,000
+            # Get leverage for this symbol
+            leverage = self.config['MAX_LEVERAGE'].get(symbol, 20)  # Default to 20x if not found
+            
+            # Capital constraints: $10,000 capital with leverage = max position value
+            max_position_value = 10000 * leverage  # Dynamic based on symbol leverage
             
             # Check if position value exceeds maximum allowed
             if position_value > max_position_value:
@@ -298,7 +309,6 @@ class TradingBot:
             # Cap at maximum position size from config
             position_size = min(position_size, self.config['POSITION_SIZE'])
             
-            leverage = 50  # 50x leverage
             self.logger.info(f"Position size: {position_size:.4f} (Risk: ${max_risk_amount}, Leverage: {leverage}x)")
             return position_size, setup['stop_loss']
             
