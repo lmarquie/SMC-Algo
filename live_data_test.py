@@ -89,6 +89,9 @@ class PaperTradingBot:
         # Get leverage for this symbol
         leverage = self.config['MAX_LEVERAGE'].get(symbol, 20)  # Default to 20x if not found
         
+        # Capital constraints: $10,000 capital with leverage = max position value
+        max_position_value = 10000 * leverage  # Dynamic based on symbol leverage
+        
         self.logger.info(f"DEBUG: Position calculation for {symbol}:")
         self.logger.info(f"  Entry: ${entry_price:.4f}, Stop: ${stop_loss:.4f}")
         self.logger.info(f"  Risk amount: ${risk_amount:.4f}")
@@ -96,9 +99,6 @@ class PaperTradingBot:
         self.logger.info(f"  Position value: ${position_value:.2f}")
         self.logger.info(f"  Leverage: {leverage}x")
         self.logger.info(f"  Max position value: ${max_position_value:.2f}")
-        
-        # Capital constraints: $10,000 capital with leverage = max position value
-        max_position_value = 10000 * leverage  # Dynamic based on symbol leverage
         
         # Check if position value exceeds maximum allowed
         if position_value > max_position_value:
@@ -269,7 +269,7 @@ class PaperTradingBot:
         # Debug: Show trailing stop updates (always show, not just when changed)
         if position['stop_loss'] != old_stop_loss:
             self.logger.info(f"🔄 TRAILING STOP UPDATED for {symbol}: ${old_stop_loss:.4f} → ${position['stop_loss']:.4f}")
-            # Note: Telegram notification is handled by trading_strategy.py
+            send_telegram_message(f"🔄 TRAILING STOP UPDATED: {symbol} ${old_stop_loss:.4f} → ${position['stop_loss']:.4f}")
         else:
             # Show current stop status even when not changed
             if cycle_count % 10 == 0:  # Show every 10 cycles to avoid spam
