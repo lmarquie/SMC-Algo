@@ -28,7 +28,7 @@ class PaperTradingBot:
             api_key=self.config['HYPERLIQUID_API_KEY'],
             subaccount=self.config['HYPERLIQUID_SUBACCOUNT']
         )
-        self.strategy = FVGStrategy(self.config)
+        self.strategy = FVGStrategy(self.config, send_notifications=False)
         
         # Paper trading state - multi-symbol
         self.paper_balance = 10000  # Starting with $10k
@@ -89,6 +89,14 @@ class PaperTradingBot:
         # Get leverage for this symbol
         leverage = self.config['MAX_LEVERAGE'].get(symbol, 20)  # Default to 20x if not found
         
+        self.logger.info(f"DEBUG: Position calculation for {symbol}:")
+        self.logger.info(f"  Entry: ${entry_price:.4f}, Stop: ${stop_loss:.4f}")
+        self.logger.info(f"  Risk amount: ${risk_amount:.4f}")
+        self.logger.info(f"  Position size: {position_size:.4f}")
+        self.logger.info(f"  Position value: ${position_value:.2f}")
+        self.logger.info(f"  Leverage: {leverage}x")
+        self.logger.info(f"  Max position value: ${max_position_value:.2f}")
+        
         # Capital constraints: $10,000 capital with leverage = max position value
         max_position_value = 10000 * leverage  # Dynamic based on symbol leverage
         
@@ -131,6 +139,8 @@ class PaperTradingBot:
             return False
         
         try:
+            self.logger.info(f"DEBUG: Opening position for {symbol} with setup: {setup}")
+            
             position_size, adjusted_stop = self.calculate_position_size(setup['entry_price'], setup['stop_loss'], setup['direction'], symbol)
             
             # Use adjusted stop if it was changed
@@ -153,20 +163,24 @@ class PaperTradingBot:
             self.logger.info(f"📈 PAPER POSITION OPENED FOR {symbol}:")
             self.logger.info(f"  Direction: {setup['direction'].upper()}")
             self.logger.info(f"  Entry: ${setup['entry_price']:.4f}")
-            self.logger.info(f"  Stop: ${setup['stop_loss']:.4f}")
+            self.logger.info(f"  Stop: ${final_stop:.4f}")
             self.logger.info(f"  Target: {setup['take_profit'] if setup['take_profit'] is not None else 'None'}")
             self.logger.info(f"  Size: {position_size:.4f}")
             self.logger.info(f"  Risk: ${self.config['RISK_PER_TRADE']}")
             self.logger.info(f"  Leverage: {leverage}x")
             
+            self.logger.info(f"DEBUG: About to send Telegram notification for {symbol}")
             send_telegram_message(
-                f"Trade OPENED: {symbol} {setup['direction'].upper()} at ${setup['entry_price']:.4f} | Stop: ${setup['stop_loss']:.4f} | Leverage: {leverage}x"
+                f"Trade OPENED: {symbol} {setup['direction'].upper()} at ${setup['entry_price']:.4f} | Stop: ${final_stop:.4f} | Leverage: {leverage}x"
             )
+            self.logger.info(f"DEBUG: Telegram notification sent for {symbol}")
             
             return True
             
         except Exception as e:
             self.logger.error(f"Error opening paper position: {e}")
+            import traceback
+            self.logger.error(f"Full traceback: {traceback.format_exc()}")
             return False
     
     def close_paper_position(self, symbol, current_price, reason):
@@ -221,13 +235,16 @@ class PaperTradingBot:
             # Reset position
             del self.current_positions[symbol]
             
+            # Calculate win rate
+            win_rate = (self.winning_trades / self.total_trades * 100) if self.total_trades > 0 else 0
+            
             send_telegram_message(
-                f"Trade CLOSED: {symbol} {position['direction'].upper()} | Entry: ${position['entry_price']:.4f} | Exit: ${current_price:.4f} | P&L: ${pnl_dollar:.2f}"
+                f"Trade CLOSED: {symbol} {position['direction'].upper()} | Entry: ${position['entry_price']:.4f} | Exit: ${current_price:.4f} | Size: {position['size']:.4f} | P&L: ${pnl_dollar:.2f}"
             )
             
-            # Send balance update after every trade
+            # Send comprehensive balance update after every trade
             send_telegram_message(
-                f"💰 BALANCE UPDATE: ${self.paper_balance:.2f} | Total P&L: ${self.total_pnl:.2f} | Trades: {self.total_trades} | Win Rate: {(self.winning_trades / self.total_trades * 100):.1f}%"
+                f"💰 TOTAL BALANCE: ${self.paper_balance:.2f} | Total P&L: ${self.total_pnl:.2f} | Trades: {self.total_trades} | Win Rate: {win_rate:.1f}%"
             )
             
         except Exception as e:
@@ -252,7 +269,7 @@ class PaperTradingBot:
         # Debug: Show trailing stop updates (always show, not just when changed)
         if position['stop_loss'] != old_stop_loss:
             self.logger.info(f"🔄 TRAILING STOP UPDATED for {symbol}: ${old_stop_loss:.4f} → ${position['stop_loss']:.4f}")
-            send_telegram_message(f"🔄 TRAILING STOP: {symbol} ${old_stop_loss:.4f} → ${position['stop_loss']:.4f}")
+            # Note: Telegram notification is handled by trading_strategy.py
         else:
             # Show current stop status even when not changed
             if cycle_count % 10 == 0:  # Show every 10 cycles to avoid spam
@@ -363,6 +380,9 @@ class PaperTradingBot:
             f"🚀 BOT STARTED: Trading {', '.join(self.config['SYMBOLS'])} | Balance: ${self.paper_balance:.2f} | Risk: ${self.config['RISK_PER_TRADE']}"
         )
         
+        # Test notification
+        send_telegram_message("🧪 TEST: Notification system is working")
+        
         candle_idx = 0  # Track candle index for cooldown
         cycle_count = 0
         
@@ -405,7 +425,11 @@ class PaperTradingBot:
                                     setup['symbol'] = symbol  # Add symbol to setup like backtest
                                     self.logger.info(f"🎯 TRADE SETUP DETECTED for {symbol}: {setup['direction'].upper()} at ${setup['entry_price']:.4f}")
                                     send_telegram_message(f"🎯 TRADE SETUP: {symbol} {setup['direction'].upper()} at ${setup['entry_price']:.4f}")
-                                    self.open_paper_position(symbol, setup, current_price)
+                                    success = self.open_paper_position(symbol, setup, current_price)
+                                    if not success:
+                                        self.logger.error(f"❌ FAILED to open position for {symbol}")
+                                    else:
+                                        self.logger.info(f"✅ SUCCESSFULLY opened position for {symbol}")
                                 elif setup:
                                     self.logger.info(f"⏳ SETUP DETECTED but in cooldown for {symbol} (cooldown: {candle_idx - self.last_stop_idx[symbol]}/5)")
                             

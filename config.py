@@ -5,8 +5,8 @@ load_dotenv()
 
 # Hyperliquid API Configuration
 # Get these from: https://app.hyperliquid.xyz/API
-HYPERLIQUID_API_KEY = ""  # API wallet's private key (from the API section)
-HYPERLIQUID_ACCOUNT_ADDRESS = ""
+HYPERLIQUID_API_KEY = "0x8ecaef0cddc7e19ca0e4430a7a44942593cf73a0"  # API wallet's private key (from the API section)
+HYPERLIQUID_ACCOUNT_ADDRESS = "0xD9A23C54539Fd6F9b51FcEe0F096f512f5adDB84"
 
  # Your main wallet's public key (NOT the API wallet's public key)
 HYPERLIQUID_SUBACCOUNT = "default"
@@ -17,8 +17,8 @@ TIMEFRAME = "1m"
 HTF_TIMEFRAME = "15m"
 POSITION_SIZE = 2000
 MAX_LEVERAGE = {
-    "SOL-USD": 20,
-    "ETH-USD": 25,
+    "SOL": 20,
+    "ETH": 25,
     "AVAX": 10
 }
 
