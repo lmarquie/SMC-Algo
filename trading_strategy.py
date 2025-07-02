@@ -3,6 +3,7 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple
 from structure_analysis import StructureAnalyzer
 import logging
+from notifications import send_telegram_message
 
 class FVGStrategy:
     def __init__(self, config: Dict):
@@ -50,8 +51,8 @@ class FVGStrategy:
         
         htf_analyzed = self.analyzer.analyze_structure(htf_df)
         
-        # Look at recent structure (last 20-30 candles)
-        recent_df = htf_analyzed.tail(30)
+        # Look at recent structure (last 100 candles)
+        recent_df = htf_analyzed.tail(100)
         
         # Count bullish vs bearish structure
         bullish_bos_count = recent_df['bullish_bos'].sum()
@@ -64,18 +65,29 @@ class FVGStrategy:
         bearish_strength = bearish_bos_count + bearish_mss_count
         
         # Determine trend direction
-        if bullish_strength > bearish_strength + 1:  # Reduced from +2 - more lenient
+        if bullish_strength > bearish_strength:
             trend = 'uptrend'
             strength = bullish_strength
-            confidence = min(bullish_strength / (bullish_strength + bearish_strength), 1.0)
-        elif bearish_strength > bullish_strength + 1:  # Reduced from +2 - more lenient
+            confidence = bullish_strength / (bullish_strength + bearish_strength)
+        elif bearish_strength > bullish_strength:
             trend = 'downtrend'
             strength = bearish_strength
-            confidence = min(bearish_strength / (bullish_strength + bearish_strength), 1.0)
+            confidence = bearish_strength / (bullish_strength + bearish_strength)
         else:
             trend = 'neutral'
             strength = max(bullish_strength, bearish_strength)
             confidence = 0.5
+                
+        print("DEBUG:", {
+            "bullish_bos": bullish_bos_count,
+            "bearish_bos": bearish_bos_count,
+            "bullish_mss": bullish_mss_count,
+            "bearish_mss": bearish_mss_count,
+            "bullish_strength": bullish_strength,
+            "bearish_strength": bearish_strength,
+            "trend": trend,
+            "confidence": confidence
+        })
         
         return {
             'trend': trend,
@@ -318,7 +330,8 @@ class FVGStrategy:
         self.logger.info(f"Trend continuation setup detected: {setup['direction']} at {setup['entry_price']}")
         self.logger.info(f"Larger trend: {setup['larger_trend']} (confidence: {setup['trend_confidence']:.2f})")
         self.logger.info(f"Pullback type: {setup['pullback_type']}")
-        self.logger.info(f"Stop: {setup['stop_loss']}, Target: {setup['take_profit']}")
+        target = setup['take_profit'] if setup['take_profit'] is not None else "None"
+        self.logger.info(f"Stop: {setup['stop_loss']}, Target: {target}")
         self.logger.info(f"Reason: {setup['reason']}")
         self.logger.info(f"FVG: {setup['fvg']['type']} from {setup['fvg']['bottom']} to {setup['fvg']['top']}")
     
@@ -430,6 +443,9 @@ class FVGStrategy:
                             position['last_stop_update_idx'] = swing_lows.index[-1]
                             updated = True
                             self.logger.info(f"📈 Trailing stop moved up to: ${new_stop:.4f} (swing low: ${best_swing_low:.4f}, confirmed after {confirmation_candles} candles)")
+                            send_telegram_message(
+                                f"Trailing STOP MOVED for {position.get('symbol', 'UNKNOWN')}: New Stop: ${position['stop_loss']:.4f}"
+                            )
                         else:
                             self.logger.debug(f"📈 Trailing stop not updated - price crossed back below swing low ${best_swing_low:.4f}")
                     else:
@@ -470,11 +486,20 @@ class FVGStrategy:
                             position['last_stop_update_idx'] = swing_highs.index[-1]
                             updated = True
                             self.logger.info(f"📉 Trailing stop moved down to: ${new_stop:.4f} (swing high: ${best_swing_high:.4f}, confirmed after {confirmation_candles} candles)")
+                            send_telegram_message(
+                                f"Trailing STOP MOVED for {position.get('symbol', 'UNKNOWN')}: New Stop: ${position['stop_loss']:.4f}"
+                            )
                         else:
                             self.logger.debug(f"📉 Trailing stop not updated - price crossed back above swing high ${best_swing_high:.4f}")
                     else:
                         self.logger.debug(f"📉 Trailing stop not updated - not enough candles after swing high (need {confirmation_candles})")
                 else:
                     self.logger.debug(f"📉 Trailing stop not updated - new stop ${new_stop:.4f} >= current stop ${position['stop_loss']:.4f}")
+        
+        print("Current stop:", position['stop_loss'])
+        print("Swing highs:", swing_highs)
+        print("Best swing high:", best_swing_high)
+        print("New stop:", new_stop)
+        print("Highs of confirmation candles:", candles_after_swing['high'].tolist())
         
         return updated 

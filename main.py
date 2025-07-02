@@ -60,6 +60,15 @@ class TradingBot:
         try:
             # Check account status
             account_info = self.client.get_account_info()
+            print("DEBUG: Raw account_info from API:", account_info)  # <-- Print the full API response
+
+            # Print the "Available to Trade" value
+            if account_info:
+                available = account_info.get('withdrawable') or account_info.get('marginSummary', {}).get('accountValue')
+                print(f"DEBUG: Available to Trade (from API): {available}")
+            else:
+                print("DEBUG: No account info returned from API")
+
             if not account_info:
                 self.logger.error("Failed to get account info. Check API key.")
                 return

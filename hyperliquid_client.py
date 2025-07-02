@@ -7,6 +7,9 @@ from typing import Dict, List, Optional
 import logging
 from datetime import datetime, timedelta
 from notifications import send_telegram_message
+from hyperliquid.info import Info
+from hyperliquid.utils import constants
+from config import HYPERLIQUID_ACCOUNT_ADDRESS
 
 class HyperliquidClient:
     def __init__(self, api_key: str, subaccount: str = "default"):
@@ -15,6 +18,9 @@ class HyperliquidClient:
         # Use the correct API URL from the official SDK
         self.base_url = "https://api.hyperliquid.xyz"
         self.ws_url = "wss://api.hyperliquid.xyz/ws"
+        
+        # Initialize the official SDK client
+        self.info_client = Info(constants.MAINNET_API_URL, skip_ws=True)
         
         # Setup logging
         self.logger = logging.getLogger(__name__)
@@ -25,6 +31,16 @@ class HyperliquidClient:
             'Content-Type': 'application/json',
             'Authorization': f'Bearer {api_key}' if api_key else ''
         })
+    
+    def get_account_info(self) -> Dict:
+        """Get account information using the official SDK"""
+        try:
+            # Use the public wallet address, not subaccount
+            user_state = self.info_client.user_state(HYPERLIQUID_ACCOUNT_ADDRESS)
+            return user_state
+        except Exception as e:
+            self.logger.error(f"Error fetching account info: {e}")
+            return {}
     
     async def get_ohlcv(self, symbol: str, timeframe: str = "1m", limit: int = 500, start_time: int = None, end_time: int = None) -> pd.DataFrame:
         """Fetch OHLCV data from Hyperliquid using the correct API (POST /info candleSnapshot)"""
@@ -86,21 +102,6 @@ class HyperliquidClient:
         except Exception as e:
             self.logger.error(f"Error fetching current price: {e}")
             return None
-    
-    def get_account_info(self) -> Dict:
-        """Get account information"""
-        try:
-            url = f"{self.base_url}/info/user"
-            params = {"user": self.subaccount}
-            
-            response = self.session.get(url, params=params)
-            response.raise_for_status()
-            
-            return response.json()
-            
-        except Exception as e:
-            self.logger.error(f"Error fetching account info: {e}")
-            return {}
     
     def place_order(self, symbol: str, side: str, size: float, 
                    order_type: str = "market", price: Optional[float] = None,
