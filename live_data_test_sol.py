@@ -92,7 +92,7 @@ class SOLPaperTradingBot:
         position_value = position_size * entry_price
         
         # Get leverage for SOL
-        leverage = self.config['MAX_LEVERAGE'].get("SOL", 20)  # Default to 20x for SOL
+        leverage = self.config['MAX_LEVERAGE'].get("SOL", 25)  # Default to 25x for SOL
         
         # Capital constraints: $10,000 capital with leverage = max position value
         max_position_value = 10000 * leverage
@@ -184,8 +184,8 @@ class SOLPaperTradingBot:
             
             self.logger.info(f"📈 PAPER POSITION OPENED FOR SOL:")
             self.logger.info(f"  Direction: {setup['direction'].upper()}")
-            self.logger.info(f"  Entry: ${setup['entry_price']:.4f}")
-            self.logger.info(f"  Stop: ${final_stop:.4f}")
+            self.logger.info(f"  Entry: ${setup['entry_price']:.2f}")
+            self.logger.info(f"  Stop: ${final_stop:.2f}")
             self.logger.info(f"  Target: {setup['take_profit'] if setup['take_profit'] is not None else 'None'}")
             self.logger.info(f"  Size: {position_size:.4f}")
             self.logger.info(f"  Risk: ${self.config['RISK_PER_TRADE']}")
@@ -193,7 +193,7 @@ class SOLPaperTradingBot:
             
             self.logger.info(f"DEBUG: About to send Telegram notification for SOL")
             send_telegram_message(
-                f"Trade OPENED: SOL {setup['direction'].upper()} at ${setup['entry_price']:.4f} | Stop: ${final_stop:.4f} | Leverage: {leverage}x"
+                f"Trade OPENED: SOL {setup['direction'].upper()} at ${setup['entry_price']:.2f} | Stop: ${final_stop:.2f} | Leverage: {leverage}x"
             )
             self.logger.info(f"DEBUG: Telegram notification sent for SOL")
             
@@ -327,62 +327,6 @@ class SOLPaperTradingBot:
             self.close_paper_position(position['stop_loss'], "Stop Loss Hit")
             self.last_stop_idx = candle_idx
     
-    def print_paper_trading_summary(self, current_price, trend_info, setup):
-        """Print comprehensive paper trading summary for SOL"""
-        print(f"\n📊 SOL PAPER TRADING SUMMARY")
-        print("="*50)
-        print(f"Current Price: ${current_price:.4f}")
-        print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"Paper Balance: ${self.paper_balance:.2f}")
-        print(f"Total P&L: ${self.total_pnl:.2f}")
-        print(f"Total Trades: {self.total_trades}")
-        
-        if self.total_trades > 0:
-            win_rate = (self.winning_trades / self.total_trades) * 100
-            print(f"Win Rate: {win_rate:.1f}%")
-        
-        if trend_info:
-            print(f"\n📈 TREND: {trend_info['trend'].upper()} (Confidence: {trend_info['confidence']:.1%})")
-        
-        if self.current_position is not None:
-            position = self.current_position
-            # Calculate unrealized P&L
-            if position['direction'] == 'long':
-                unrealized_pnl = (current_price - position['entry_price']) / position['entry_price']
-                current_profit = current_price - position['entry_price']
-                current_risk = position['entry_price'] - position['stop_loss']
-            else:
-                unrealized_pnl = (position['entry_price'] - current_price) / position['entry_price']
-                current_profit = position['entry_price'] - current_price
-                current_risk = position['stop_loss'] - position['entry_price']
-            
-            position_value = position['size'] * position['entry_price']
-            unrealized_dollar = unrealized_pnl * position_value
-            
-            # Determine stop loss status
-            rr_ratio = current_profit / current_risk if current_risk > 0 else 0
-            stop_status = "TRAILING" if rr_ratio > 1.0 else "STATIC"
-            
-            print(f"\n🎯 ACTIVE POSITION:")
-            print(f"  Direction: {position['direction'].upper()}")
-            print(f"  Entry: ${position['entry_price']:.4f}")
-            print(f"  Current: ${current_price:.4f}")
-            print(f"  Unrealized P&L: {unrealized_pnl:.2%} (${unrealized_dollar:.2f})")
-            print(f"  R:R Ratio: {rr_ratio:.2f}")
-            print(f"  Stop: ${position['stop_loss']:.4f} ({stop_status})")
-            print(f"  Target: {position['take_profit'] if position['take_profit'] is not None else 'None'}")
-        elif setup:
-            print(f"\n🎯 TRADE SETUP DETECTED:")
-            print(f"  Direction: {setup['direction'].upper()}")
-            print(f"  Entry: ${setup['entry_price']:.4f}")
-            print(f"  Stop: ${setup['stop_loss']:.4f}")
-            print(f"  Target: {setup['take_profit'] if setup['take_profit'] is not None else 'None'}")
-            print(f"  Reason: {setup['reason']}")
-        else:
-            print(f"\n❌ No active position or trade setup")
-        
-        print("="*50)
-    
     async def run_paper_trading(self, duration_minutes=None):
         """Run paper trading indefinitely or for specified duration"""
         if duration_minutes:
@@ -393,36 +337,69 @@ class SOLPaperTradingBot:
             self.logger.info(f"🚀 Starting SOL paper trading INDEFINITELY...")
             self.logger.info("Press Ctrl+C to stop the bot")
             end_time = None
-
+        
         self.logger.info(f"Trading symbol: SOL")
         self.logger.info(f"Risk per trade: ${self.config['RISK_PER_TRADE']}")
 
-        candle_idx = 0
+        candle_idx = 0  # Track candle index for cooldown
         cycle_count = 0
-
+        
         try:
-            while True:
+            while True:  # Run indefinitely
                 if end_time and datetime.now() >= end_time:
                     break
-
+                
                 cycle_count += 1
+                
                 try:
+                    # Fetch live data for SOL
                     ltf_data, htf_data, current_price = await self.fetch_live_data()
                     if ltf_data is not None and current_price is not None:
-                        # ... existing code ...
-                        candle_idx += 1
+                        # Get current candle info for stop loss checks
+                        current_candle = ltf_data.iloc[-1]
+                        current_low = current_candle['low']
+                        current_high = current_candle['high']
+                        
+                        # Only check for trailing stop updates in the main loop
+                        if self.current_position is not None:
+                            old_stop_loss = self.current_position['stop_loss']
+                            self.strategy.update_trailing_stop(ltf_data, self.current_position)
+                            # For long: move stop up; for short: move stop down
+                            if (self.current_position['direction'] == 'long' and self.current_position['stop_loss'] > old_stop_loss) or \
+                               (self.current_position['direction'] == 'short' and self.current_position['stop_loss'] < old_stop_loss):
+                                self.logger.info(f"🔄 TRAILING STOP UPDATED for SOL: ${old_stop_loss:.4f} → ${self.current_position['stop_loss']:.4f}")
+                                send_telegram_message(f"🔄 TRAILING STOP UPDATED: SOL ${old_stop_loss:.4f} → ${self.current_position['stop_loss']:.4f}")
+                        
+                        # Check for new entry if no position
+                        if self.current_position is None:
+                            setup = self.strategy.check_entry_conditions(ltf_data, htf_data)
+                            if setup and (candle_idx - self.last_stop_idx >= 300):  # 5 minute cooldown (300 seconds)
+                                setup['symbol'] = 'SOL'  # Add symbol to setup
+                                self.logger.info(f"🎯 TRADE SETUP DETECTED for SOL: {setup['direction'].upper()} at ${setup['entry_price']:.2f}")
+                                send_telegram_message(f"🎯 TRADE SETUP: SOL {setup['direction'].upper()} at ${setup['entry_price']:.2f}")
+                                success = self.open_paper_position(setup, current_price)
+                                if not success:
+                                    self.logger.error(f"❌ FAILED to open position for SOL")
+                                else:
+                                    self.logger.info(f"✅ SUCCESSFULLY opened position for SOL")
+                            elif setup:
+                                self.logger.info(f"⏳ SETUP DETECTED but in cooldown for SOL (cooldown: {candle_idx - self.last_stop_idx}/300)")
+                        else:
+                            self.logger.info(f"📊 SOL already has position: {self.current_position['direction']} at ${self.current_position['entry_price']:.2f}")
+                    
+                    candle_idx += 1
                     await asyncio.sleep(1)
                 except Exception as e:
                     self.logger.error(f"Error in paper trading cycle: {e}")
                     await asyncio.sleep(1)
         except KeyboardInterrupt:
             self.logger.info("🛑 SOL paper trading stopped by user (Ctrl+C)")
-
+        
         if self.current_position is not None:
             current_price = self.client.get_current_price("SOL")
             if current_price:
                 self.close_paper_position(current_price, "Session End")
-
+        
         self.client.close()
 
     async def monitor_stops_continuously(self):

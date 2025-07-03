@@ -337,20 +337,22 @@ class ETHPaperTradingBot:
             self.logger.info(f"🚀 Starting ETH paper trading INDEFINITELY...")
             self.logger.info("Press Ctrl+C to stop the bot")
             end_time = None
-
+        
         self.logger.info(f"Trading symbol: ETH")
         self.logger.info(f"Risk per trade: ${self.config['RISK_PER_TRADE']}")
 
-        candle_idx = 0
+        candle_idx = 0  # Track candle index for cooldown
         cycle_count = 0
-
+        
         try:
-            while True:
+            while True:  # Run indefinitely
                 if end_time and datetime.now() >= end_time:
                     break
-
+                
                 cycle_count += 1
+                
                 try:
+                    # Fetch live data for ETH
                     ltf_data, htf_data, current_price = await self.fetch_live_data()
                     if ltf_data is not None and current_price is not None:
                         # Get current candle info for stop loss checks
@@ -384,6 +386,7 @@ class ETHPaperTradingBot:
                                 self.logger.info(f"⏳ SETUP DETECTED but in cooldown for ETH (cooldown: {candle_idx - self.last_stop_idx}/300)")
                         else:
                             self.logger.info(f"📊 ETH already has position: {self.current_position['direction']} at ${self.current_position['entry_price']:.2f}")
+                    
                     candle_idx += 1
                     await asyncio.sleep(1)
                 except Exception as e:
@@ -391,12 +394,12 @@ class ETHPaperTradingBot:
                     await asyncio.sleep(1)
         except KeyboardInterrupt:
             self.logger.info("🛑 ETH paper trading stopped by user (Ctrl+C)")
-
+        
         if self.current_position is not None:
             current_price = self.client.get_current_price("ETH")
             if current_price:
                 self.close_paper_position(current_price, "Session End")
-
+        
         self.client.close()
 
     async def monitor_stops_continuously(self):
