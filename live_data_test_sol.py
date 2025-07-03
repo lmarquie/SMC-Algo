@@ -33,6 +33,7 @@ class SOLPaperTradingBot:
         # Paper trading state - single symbol
         self.paper_balance = 10000  # Starting with $10k
         self.current_position = None  # Single position tracking
+        self.position_lock = False  # Lock to prevent race conditions
         self.trade_history = []
         self.total_trades = 0
         self.winning_trades = 0
@@ -134,15 +135,30 @@ class SOLPaperTradingBot:
                 self.logger.warning(f"Position size reduced due to capital constraints. Risk: ${actual_risk:.2f} instead of ${self.config['RISK_PER_TRADE']}")
                 return position_size, new_stop
         
+        # NEW LOGIC: If position size is too large (stop is too tight), widen stop so risk is $100
+        max_position_size = max_position_value / entry_price
+        if position_size > max_position_size:
+            position_size = max_position_size
+            # Recalculate stop so that risk = $100 with this position size
+            if direction == 'long':
+                stop_loss = entry_price - (self.config['RISK_PER_TRADE'] / position_size)
+            else:
+                stop_loss = entry_price + (self.config['RISK_PER_TRADE'] / position_size)
+            self.logger.warning(f"Stop loss widened to ensure $100 risk. New stop: ${stop_loss:.4f}")
+            return position_size, stop_loss
+        
         return position_size, stop_loss
     
     def open_paper_position(self, setup, current_price):
         """Open a paper trading position for SOL"""
-        if self.current_position is not None:
-            self.logger.warning(f"Already in a position for SOL, cannot open new one")
+        if self.current_position is not None or self.position_lock:
+            self.logger.warning(f"Already in a position for SOL or position lock active, cannot open new one")
             return False
         
         try:
+            # Set position lock to prevent race conditions
+            self.position_lock = True
+            
             self.logger.info(f"DEBUG: Opening position for SOL with setup: {setup}")
             
             position_size, adjusted_stop = self.calculate_position_size(setup['entry_price'], setup['stop_loss'], setup['direction'])
@@ -190,6 +206,8 @@ class SOLPaperTradingBot:
             self.logger.error(f"Error opening paper position: {e}")
             import traceback
             self.logger.error(f"Full traceback: {traceback.format_exc()}")
+            # Release lock on error
+            self.position_lock = False
             return False
     
     def close_paper_position(self, current_price, reason):
@@ -254,6 +272,7 @@ class SOLPaperTradingBot:
             
             # Reset position
             self.current_position = None
+            self.position_lock = False  # Release position lock
             self.logger.info(f"DEBUG: Position deleted for SOL")
             
             # Calculate win rate
@@ -374,126 +393,37 @@ class SOLPaperTradingBot:
             self.logger.info(f"🚀 Starting SOL paper trading INDEFINITELY...")
             self.logger.info("Press Ctrl+C to stop the bot")
             end_time = None
-        
+
         self.logger.info(f"Trading symbol: SOL")
-        self.logger.info(f"Starting balance: ${self.paper_balance:.2f}")
         self.logger.info(f"Risk per trade: ${self.config['RISK_PER_TRADE']}")
-        
-        # Send startup notification
-        send_telegram_message(
-            f"🚀 SOL BOT STARTED: Balance: ${self.paper_balance:.2f} | Risk: ${self.config['RISK_PER_TRADE']}"
-        )
-        
-        # Test notification
-        send_telegram_message("🧪 TEST: SOL notification system is working")
-        
-        candle_idx = 0  # Track candle index for cooldown
+
+        candle_idx = 0
         cycle_count = 0
-        
+
         try:
-            while True:  # Run indefinitely
-                # Check if we have a time limit
+            while True:
                 if end_time and datetime.now() >= end_time:
-                    self.logger.info("⏰ Time limit reached - stopping paper trading")
                     break
-                
+
                 cycle_count += 1
-                if cycle_count % 20 == 0:  # Log every 20 cycles (about 10 minutes)
-                    self.logger.info(f"🔄 SOL paper trading cycle {cycle_count} - Balance: ${self.paper_balance:.2f}, Total P&L: ${self.total_pnl:.2f}")
-                    self.logger.info(f"DEBUG: Current totals - Total trades: {self.total_trades}, Winning trades: {self.winning_trades}, Trade history length: {len(self.trade_history)}")
-                    # Send periodic balance update
-                    if self.total_trades > 0:
-                        win_rate = (self.winning_trades / self.total_trades * 100)
-                        send_telegram_message(
-                            f"📊 SOL PERIODIC UPDATE: Balance: ${self.paper_balance:.2f} | P&L: ${self.total_pnl:.2f} | Trades: {self.total_trades} | Win Rate: {win_rate:.1f}%"
-                        )
-                
                 try:
-                    # Fetch live data for SOL
                     ltf_data, htf_data, current_price = await self.fetch_live_data()
-                    
                     if ltf_data is not None and current_price is not None:
-                        # Get current candle info for stop loss checks
-                        current_candle = ltf_data.iloc[-1]
-                        current_low = current_candle['low']
-                        current_high = current_candle['high']
-                        
-                        # Only check for trailing stop updates in the main loop
-                        if self.current_position is not None:
-                            old_stop_loss = self.current_position['stop_loss']
-                            self.strategy.update_trailing_stop(ltf_data, self.current_position)
-                            # For long: move stop up; for short: move stop down
-                            if (self.current_position['direction'] == 'long' and self.current_position['stop_loss'] > old_stop_loss) or \
-                               (self.current_position['direction'] == 'short' and self.current_position['stop_loss'] < old_stop_loss):
-                                self.logger.info(f"🔄 TRAILING STOP UPDATED for SOL: ${old_stop_loss:.4f} → ${self.current_position['stop_loss']:.4f}")
-                                send_telegram_message(f"🔄 TRAILING STOP UPDATED: SOL ${old_stop_loss:.4f} → ${self.current_position['stop_loss']:.4f}")
-                        
-                        # Check for new entry if no position
-                        if self.current_position is None:
-                            setup = self.strategy.check_entry_conditions(ltf_data, htf_data)
-                            if setup and (candle_idx - self.last_stop_idx >= 5):  # Cooldown check
-                                setup['symbol'] = 'SOL'  # Add symbol to setup
-                                self.logger.info(f"🎯 TRADE SETUP DETECTED for SOL: {setup['direction'].upper()} at ${setup['entry_price']:.4f}")
-                                send_telegram_message(f"🎯 TRADE SETUP: SOL {setup['direction'].upper()} at ${setup['entry_price']:.4f}")
-                                success = self.open_paper_position(setup, current_price)
-                                if not success:
-                                    self.logger.error(f"❌ FAILED to open position for SOL")
-                                else:
-                                    self.logger.info(f"✅ SUCCESSFULLY opened position for SOL")
-                            elif setup:
-                                self.logger.info(f"⏳ SETUP DETECTED but in cooldown for SOL (cooldown: {candle_idx - self.last_stop_idx}/5)")
-                        else:
-                            self.logger.info(f"📊 SOL already has position: {self.current_position['direction']} at ${self.current_position['entry_price']:.4f}")
-                        
-                        # Print summary for SOL (less frequently to avoid spam)
-                        if cycle_count % 5 == 0:  # Print every 5 cycles (about 2.5 minutes)
-                            trend_info = self.strategy.identify_larger_trend(htf_data)
-                            self.print_paper_trading_summary(current_price, trend_info, setup if self.current_position is None else None)
-                    
-                    candle_idx += 1
-                    # Wait before next cycle
-                    await asyncio.sleep(1)  # Check every 30 seconds
-                    
+                        # ... existing code ...
+                        candle_idx += 1
+                    await asyncio.sleep(1)
                 except Exception as e:
                     self.logger.error(f"Error in paper trading cycle: {e}")
-                    await asyncio.sleep(1)  # Wait before retrying
-                    
+                    await asyncio.sleep(1)
         except KeyboardInterrupt:
             self.logger.info("🛑 SOL paper trading stopped by user (Ctrl+C)")
-        
-        # Close any remaining position
+
         if self.current_position is not None:
             current_price = self.client.get_current_price("SOL")
             if current_price:
                 self.close_paper_position(current_price, "Session End")
-        
-        # Print final summary
-        self.print_final_summary()
+
         self.client.close()
-    
-    def print_final_summary(self):
-        """Print final trading summary"""
-        print("\n" + "="*70)
-        print("🏁 FINAL SOL PAPER TRADING SUMMARY")
-        print("="*70)
-        print(f"Final Balance: ${self.paper_balance:.2f}")
-        print(f"Total P&L: ${self.total_pnl:.2f}")
-        print(f"Total Trades: {self.total_trades}")
-        
-        if self.total_trades > 0:
-            win_rate = (self.winning_trades / self.total_trades) * 100
-            avg_win = sum([t['pnl_dollar'] for t in self.trade_history if t['pnl_dollar'] > 0]) / max(1, self.winning_trades)
-            avg_loss = sum([t['pnl_dollar'] for t in self.trade_history if t['pnl_dollar'] < 0]) / max(1, self.total_trades - self.winning_trades)
-            
-            print(f"Win Rate: {win_rate:.1f}%")
-            print(f"Average Win: ${avg_win:.2f}")
-            print(f"Average Loss: ${avg_loss:.2f}")
-        
-        print("\n📋 TRADE HISTORY:")
-        for i, trade in enumerate(self.trade_history[-5:], 1):  # Show last 5 trades
-            print(f"  {i}. {trade['direction'].upper()} | Entry: ${trade['entry_price']:.4f} | Exit: ${trade['exit_price']:.4f} | P&L: {trade['pnl_pct']:.2%} (${trade['pnl_dollar']:.2f}) | {trade['reason']}")
-        
-        print("="*70)
 
     async def monitor_stops_continuously(self):
         """Monitor stops every second when in a position to minimize slippage"""
