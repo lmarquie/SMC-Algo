@@ -38,7 +38,7 @@ class ETHPaperTradingBot:
         self.total_trades = 0
         self.winning_trades = 0
         self.total_pnl = 0
-        self.last_stop_idx = -10  # Track last stop loss exit index for cooldown
+        self.last_position_close_time = None  # Track last position close time for cooldown
         
         # Stop monitoring state
         self.stop_monitoring_task = None
@@ -270,6 +270,10 @@ class ETHPaperTradingBot:
             self.logger.info(f"  Reason: {reason}")
             self.logger.info(f"  New Balance: ${self.paper_balance:.2f}")
             
+            # Set cooldown timer - 5 minutes after ANY position close
+            self.last_position_close_time = datetime.now()
+            self.logger.info(f"⏳ COOLDOWN STARTED: 5-minute cooldown after position close for ETH")
+            
             # Reset position
             self.current_position = None
             self.position_lock = False  # Release position lock
@@ -320,12 +324,10 @@ class ETHPaperTradingBot:
             self.logger.info(f"🛑 STOP LOSS HIT for ETH LONG: Low ${current_low:.4f} <= Stop ${position['stop_loss']:.4f}")
             send_telegram_message(f"🛑 STOP LOSS HIT: ETH LONG at ${position['stop_loss']:.4f}")
             self.close_paper_position(position['stop_loss'], "Stop Loss Hit")
-            self.last_stop_idx = candle_idx
         elif direction == 'short' and current_high >= position['stop_loss']:
             self.logger.info(f"🛑 STOP LOSS HIT for ETH SHORT: High ${current_high:.4f} >= Stop ${position['stop_loss']:.4f}")
             send_telegram_message(f"🛑 STOP LOSS HIT: ETH SHORT at ${position['stop_loss']:.4f}")
             self.close_paper_position(position['stop_loss'], "Stop Loss Hit")
-            self.last_stop_idx = candle_idx
     
     async def run_paper_trading(self, duration_minutes=None):
         """Run paper trading indefinitely or for specified duration"""
@@ -372,8 +374,20 @@ class ETHPaperTradingBot:
                         
                         # Check for new entry if no position
                         if self.current_position is None:
+                            # Check cooldown period
+                            cooldown_remaining = None
+                            if self.last_position_close_time:
+                                time_since_close = datetime.now() - self.last_position_close_time
+                                cooldown_remaining = 300 - time_since_close.total_seconds()  # 5 minutes = 300 seconds
+                            
+                            if cooldown_remaining and cooldown_remaining > 0:
+                                self.logger.info(f"⏳ COOLDOWN ACTIVE for ETH: {cooldown_remaining:.0f} seconds remaining")
+                                candle_idx += 1
+                                await asyncio.sleep(1)
+                                continue
+                            
                             setup = self.strategy.check_entry_conditions(ltf_data, htf_data)
-                            if setup and (candle_idx - self.last_stop_idx >= 300):  # 5 minute cooldown (300 seconds)
+                            if setup:
                                 setup['symbol'] = 'ETH'  # Add symbol to setup
                                 self.logger.info(f"🎯 TRADE SETUP DETECTED for ETH: {setup['direction'].upper()} at ${setup['entry_price']:.2f}")
                                 send_telegram_message(f"🎯 TRADE SETUP: ETH {setup['direction'].upper()} at ${setup['entry_price']:.2f}")
@@ -382,8 +396,6 @@ class ETHPaperTradingBot:
                                     self.logger.error(f"❌ FAILED to open position for ETH")
                                 else:
                                     self.logger.info(f"✅ SUCCESSFULLY opened position for ETH")
-                            elif setup:
-                                self.logger.info(f"⏳ SETUP DETECTED but in cooldown for ETH (cooldown: {candle_idx - self.last_stop_idx}/300)")
                         else:
                             self.logger.info(f"📊 ETH already has position: {self.current_position['direction']} at ${self.current_position['entry_price']:.2f}")
                     
