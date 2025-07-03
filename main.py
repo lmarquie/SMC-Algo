@@ -80,7 +80,7 @@ class TradingBot:
             # Main trading loop
             while self.is_running:
                 await self.trading_cycle()
-                await asyncio.sleep(3)  # 3 second interval
+                await asyncio.sleep(1)  # 1 second interval for faster stop loss monitoring
                 
         except KeyboardInterrupt:
             self.logger.info("Bot stopped by user")
@@ -131,7 +131,7 @@ class TradingBot:
                     self.strategy.update_trailing_stop(ltf_data, self.current_position)
                 
                 # Small delay between symbols
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)  # Reduced delay for faster processing
             
             # AVAX-specific stop loss move at 3:1 RR
             if self.current_position and self.current_position.get('symbol') == "AVAX":

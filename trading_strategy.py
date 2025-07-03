@@ -61,9 +61,9 @@ class FVGStrategy:
         bullish_mss_count = recent_df['bullish_mss'].sum()
         bearish_mss_count = recent_df['bearish_mss'].sum()
         
-        # Calculate trend strength
-        bullish_strength = bullish_bos_count + bullish_mss_count
-        bearish_strength = bearish_bos_count + bearish_mss_count
+        # Weighted trend strength: BOS gets 2x weight
+        bullish_strength = 2 * bullish_bos_count + bullish_mss_count
+        bearish_strength = 2 * bearish_bos_count + bearish_mss_count
         
         # Determine trend direction
         if bullish_strength > bearish_strength:
@@ -381,7 +381,7 @@ class FVGStrategy:
         return valid_highs.min()
     
     def update_trailing_stop(self, df: pd.DataFrame, position: Dict) -> bool:
-        """Update stop only on new swing structure, but only after R:R > 1:1."""
+        """Update stop only on new swing structure, but only after R:R >= 1:1."""
         if not position:
             return False
         
@@ -395,20 +395,20 @@ class FVGStrategy:
             current_profit = position['entry_price'] - current_price
             current_risk = position['stop_loss'] - position['entry_price']
         
-        # Only update trailing stop if R:R > 0.5:1 (start trailing earlier)
-        if current_profit <= current_risk * 0.5:
+        # Only update trailing stop if R:R >= 1.0 (start trailing at 1:1 RR)
+        if current_profit < current_risk:
             # Debug: Show when trailing is not yet enabled
             if 'trailing_enabled' not in position:
                 rr_ratio = current_profit / current_risk if current_risk > 0 else 0
-                self.logger.debug(f"⏳ Trailing not yet enabled - R:R = {rr_ratio:.2f} (need > 0.5). Profit: ${current_profit:.4f}, Risk: ${current_risk:.4f}")
-            return False  # Keep static stop until slightly profitable
+                self.logger.debug(f"⏳ Trailing not yet enabled - R:R = {rr_ratio:.2f} (need >= 1.0). Profit: ${current_profit:.4f}, Risk: ${current_risk:.4f}")
+            return False  # Keep static stop until 1:1 RR is reached
         
         # Store original static stop if not already stored
         if 'original_stop_loss' not in position:
             position['original_stop_loss'] = position['stop_loss']
             position['trailing_enabled'] = True
             rr_ratio = current_profit / current_risk if current_risk > 0 else 0
-            self.logger.info(f"🎯 TRAILING STOP ENABLED! R:R = {rr_ratio:.2f} > 0.5. Profit: ${current_profit:.4f}, Risk: ${current_risk:.4f}")
+            self.logger.info(f"🎯 TRAILING STOP ENABLED! R:R = {rr_ratio:.2f} >= 1.0. Profit: ${current_profit:.4f}, Risk: ${current_risk:.4f}")
             if self.send_notifications:
                 send_telegram_message(f"🎯 Trailing stop ENABLED for {position.get('symbol', 'UNKNOWN')} - R:R = {rr_ratio:.2f}")
         

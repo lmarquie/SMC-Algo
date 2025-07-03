@@ -12,14 +12,14 @@ HYPERLIQUID_ACCOUNT_ADDRESS = "0xD9A23C54539Fd6F9b51FcEe0F096f512f5adDB84"
 HYPERLIQUID_SUBACCOUNT = "default"
 
 # Trading Configuration
-SYMBOLS = ["AVAX", "SOL", "ETH"]
+SYMBOLS = ["BTC", "SOL", "ETH"]
 TIMEFRAME = "1m"
 HTF_TIMEFRAME = "15m"
 POSITION_SIZE = 2000
 MAX_LEVERAGE = {
     "SOL": 20,
     "ETH": 25,
-    "AVAX": 10
+    "BTC": 40
 }
 
 # Risk Management
