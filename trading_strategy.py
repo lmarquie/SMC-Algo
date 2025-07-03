@@ -142,8 +142,8 @@ class FVGStrategy:
         # Step 1: Identify larger trend
         larger_trend = self.identify_larger_trend(htf_df)
         
-        # Only trade if we have a clear trend with good confidence
-        if larger_trend['confidence'] < 0.4:  # Reduced from 0.6 - more lenient
+        # Make trend confidence requirement stricter
+        if larger_trend['confidence'] < 0.6:  # Increased from 0.4 to 0.6
             return None
         
         # Step 2: Detect pullback against the larger trend
@@ -180,22 +180,22 @@ class FVGStrategy:
             if self.analyzer.check_fvg_touch(current_price, fvg):
                 # Analyze the DataFrame to get structure columns
                 df_analyzed = self.analyzer.analyze_structure(df)
-                recent_df = df_analyzed.tail(8)  # Look at very recent candles
+                recent_df = df_analyzed.tail(5)  # Reduced from 8 to 5 candles - stricter
                 
-                # Look for bullish BOS or MSS (reversal signal)
+                # Look for bullish BOS or MSS (reversal signal) - make stricter
                 has_bullish_reversal = (
                     recent_df['bullish_bos'].sum() > 0 or 
                     recent_df['bullish_mss'].sum() > 0
                 )
                 
-                # Look for displacement (strong reversal move)
+                # Look for displacement (strong reversal move) - require this now
                 has_displacement = recent_df['displacement'].sum() > 0
                 
                 # Check for liquidity sweep (optional but preferred)
                 has_sweep = recent_df['bullish_sweep'].sum() > 0
                 
-                # Entry conditions for trend continuation - more lenient
-                if has_bullish_reversal:  # Removed has_displacement requirement
+                # Entry conditions for trend continuation - stricter
+                if has_bullish_reversal and has_displacement:  # Now require both
                     # Calculate entry levels
                     entry_price = current_price
                     stop_loss = fvg['bottom'] - self.config.get('STOP_LOSS_BUFFER', 0.005)
@@ -216,7 +216,7 @@ class FVGStrategy:
                         'larger_trend': larger_trend['trend'],
                         'trend_confidence': larger_trend['confidence'],
                         'pullback_type': pullback['type'],
-                        'reason': f'Uptrend continuation: Bearish pullback + Bullish reversal + FVG. Trend confidence: {larger_trend["confidence"]:.2f}'
+                        'reason': f'Uptrend continuation: Bearish pullback + Bullish reversal + Displacement + FVG. Trend confidence: {larger_trend["confidence"]:.2f}'
                     }
         
         return None
@@ -231,22 +231,22 @@ class FVGStrategy:
             if self.analyzer.check_fvg_touch(current_price, fvg):
                 # Analyze the DataFrame to get structure columns
                 df_analyzed = self.analyzer.analyze_structure(df)
-                recent_df = df_analyzed.tail(8)  # Look at very recent candles
+                recent_df = df_analyzed.tail(5)  # Reduced from 8 to 5 candles - stricter
                 
-                # Look for bearish BOS or MSS (reversal signal)
+                # Look for bearish BOS or MSS (reversal signal) - make stricter
                 has_bearish_reversal = (
                     recent_df['bearish_bos'].sum() > 0 or 
                     recent_df['bearish_mss'].sum() > 0
                 )
                 
-                # Look for displacement (strong reversal move)
+                # Look for displacement (strong reversal move) - require this now
                 has_displacement = recent_df['displacement'].sum() > 0
                 
                 # Check for liquidity sweep (optional but preferred)
                 has_sweep = recent_df['bearish_sweep'].sum() > 0
                 
-                # Entry conditions for trend continuation - more lenient
-                if has_bearish_reversal:  # Removed has_displacement requirement
+                # Entry conditions for trend continuation - stricter
+                if has_bearish_reversal and has_displacement:  # Now require both
                     # Calculate entry levels
                     entry_price = current_price
                     stop_loss = fvg['top'] + self.config.get('STOP_LOSS_BUFFER', 0.005)
@@ -267,7 +267,7 @@ class FVGStrategy:
                         'larger_trend': larger_trend['trend'],
                         'trend_confidence': larger_trend['confidence'],
                         'pullback_type': pullback['type'],
-                        'reason': f'Downtrend continuation: Bullish pullback + Bearish reversal + FVG. Trend confidence: {larger_trend["confidence"]:.2f}'
+                        'reason': f'Downtrend continuation: Bullish pullback + Bearish reversal + Displacement + FVG. Trend confidence: {larger_trend["confidence"]:.2f}'
                     }
         
         return None

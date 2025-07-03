@@ -28,7 +28,7 @@ RISK_PER_TRADE = 100  # Fixed $100 risk per trade
 # Strategy Parameters (ACTUALLY USED)
 BOS_LOOKBACK = 8  # Used in StructureAnalyzer
 DISPLACEMENT_THRESHOLD = 0.3  # Used in displacement detection
-STOP_LOSS_BUFFER = 0.003  # Used in stop loss calculations
+STOP_LOSS_BUFFER = 0.005  # Used in stop loss calculations
 TAKE_PROFIT_RATIO = 1.5  # Used in position sizing
 TRAILING_CONFIRMATION_CANDLES = 2  # Fewer candles - move stop faster
 STOP_LOSS_BUFFER = 0.005  # More generous buffer (was 0.003)  # Number of candles price must stay above/below swing before moving trailing stop 

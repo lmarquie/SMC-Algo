@@ -63,11 +63,11 @@ class AVAXPaperTradingBot:
                 limit=1000
             )
             
-            # Fetch HTF data (15m) - increase to 500 candles
+            # Fetch HTF data (15m) - reduced to 300 candles
             htf_data = await self.client.get_ohlcv(
                 symbol="AVAX",
                 timeframe=self.config['HTF_TIMEFRAME'],
-                limit=500
+                limit=100  # Reduced from 500
             )
             
             # Get current price
@@ -84,7 +84,7 @@ class AVAXPaperTradingBot:
             return None, None, None
     
     def calculate_position_size(self, entry_price, stop_loss, direction):
-        """Calculate position size based on risk per trade with capital and leverage constraints"""
+        """Calculate position size based on risk management rules with capital and leverage constraints"""
         # AVAX-specific: Ensure minimum 3-cent stop loss distance
         min_stop_distance = 0.03  # 3 cents minimum
         
@@ -99,14 +99,19 @@ class AVAXPaperTradingBot:
                 stop_loss = entry_price + min_stop_distance
                 self.logger.info(f"AVAX: Stop loss adjusted to minimum 3-cent distance: ${stop_loss:.4f}")
         
+        # MATCH BACKTEST: Use $150 fixed risk instead of $100
+        target_risk = 150  # $150 fixed risk (matches backtest)
+        
+        # Position size = Target Risk / Price Risk per Unit
+        # This guarantees we risk exactly $150
         risk_amount = abs(entry_price - stop_loss)
-        position_size = self.config['RISK_PER_TRADE'] / risk_amount
+        position_size = target_risk / risk_amount
         
         # Calculate position value (size × entry price)
         position_value = position_size * entry_price
         
         # Get leverage for AVAX
-        leverage = self.config['MAX_LEVERAGE'].get("AVAX", 25)  # Default to 25x for AVAX
+        leverage = self.config['MAX_LEVERAGE'].get("AVAX", 20)  # Default to 20x for AVAX
         
         # Capital constraints: $10,000 capital with leverage = max position value
         max_position_value = 10000 * leverage
@@ -135,7 +140,7 @@ class AVAXPaperTradingBot:
             
             # Recalculate position size with new stop
             new_risk_amount = abs(entry_price - new_stop)
-            position_size = self.config['RISK_PER_TRADE'] / new_risk_amount
+            position_size = target_risk / new_risk_amount
             position_value = position_size * entry_price
             
             # Check if this fits within capital constraints
@@ -146,20 +151,8 @@ class AVAXPaperTradingBot:
                 # If still too large, scale down position size as last resort
                 position_size = max_position_value / entry_price
                 actual_risk = position_size * new_risk_amount
-                self.logger.warning(f"Position size reduced due to capital constraints. Risk: ${actual_risk:.2f} instead of ${self.config['RISK_PER_TRADE']}")
+                self.logger.warning(f"Position size reduced due to capital constraints. Risk: ${actual_risk:.2f} instead of $150")
                 return position_size, new_stop
-        
-        # NEW LOGIC: If position size is too large (stop is too tight), widen stop so risk is $100
-        max_position_size = max_position_value / entry_price
-        if position_size > max_position_size:
-            position_size = max_position_size
-            # Recalculate stop so that risk = $100 with this position size
-            if direction == 'long':
-                stop_loss = entry_price - (self.config['RISK_PER_TRADE'] / position_size)
-            else:
-                stop_loss = entry_price + (self.config['RISK_PER_TRADE'] / position_size)
-            self.logger.warning(f"Stop loss widened to ensure $100 risk. New stop: ${stop_loss:.4f}")
-            return position_size, stop_loss
         
         return position_size, stop_loss
     
