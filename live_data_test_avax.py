@@ -386,6 +386,31 @@ class AVAXPaperTradingBot:
                                 self.logger.info(f"⏳ SETUP DETECTED but in cooldown for AVAX (cooldown: {candle_idx - self.last_stop_idx}/300)")
                         else:
                             self.logger.info(f"📊 AVAX already has position: {self.current_position['direction']} at ${self.current_position['entry_price']:.2f}")
+                        
+                        if self.current_position is not None:
+                            position = self.current_position
+                            initial_risk = abs(position['entry_price'] - position['stop_loss'])
+                            if initial_risk > 0:
+                                if position['direction'] == 'long':
+                                    current_profit = current_price - position['entry_price']
+                                else:
+                                    current_profit = position['entry_price'] - current_price
+                                rr_ratio = current_profit / initial_risk
+
+                                # If RR >= 3, move stop loss to 1:1 RR
+                                if rr_ratio >= 3:
+                                    if position['direction'] == 'long':
+                                        new_stop = position['entry_price'] + initial_risk
+                                        if position['stop_loss'] < new_stop:
+                                            self.logger.info(f"Moved AVAX stop loss to 1:1 RR (${new_stop:.4f}) after reaching 3:1 RR")
+                                            position['stop_loss'] = new_stop
+                                            send_telegram_message(f"AVAX stop loss moved to 1:1 RR (${new_stop:.4f}) after 3:1 RR")
+                                    else:
+                                        new_stop = position['entry_price'] - initial_risk
+                                        if position['stop_loss'] > new_stop:
+                                            self.logger.info(f"Moved AVAX stop loss to 1:1 RR (${new_stop:.4f}) after reaching 3:1 RR")
+                                            position['stop_loss'] = new_stop
+                                            send_telegram_message(f"AVAX stop loss moved to 1:1 RR (${new_stop:.4f}) after 3:1 RR")
                     
                     candle_idx += 1
                     await asyncio.sleep(1)
