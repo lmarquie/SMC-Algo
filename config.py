@@ -23,7 +23,7 @@ MAX_LEVERAGE = {
 }
 
 # Risk Management
-RISK_PER_TRADE = 100  # Fixed $100 risk per trade
+RISK_PER_TRADE = 150  # Fixed $100 risk per trade
 
 # Strategy Parameters (ACTUALLY USED)
 BOS_LOOKBACK = 8  # Used in StructureAnalyzer
