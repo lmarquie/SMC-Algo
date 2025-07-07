@@ -222,6 +222,7 @@ class AVAXLiveTradingBot:
                 name="AVAX",
                 is_buy=is_buy,
                 sz=position_size,
+                px=setup['entry_price'],  # Use the entry price as limit
                 slippage=0.001
             )
             
@@ -285,8 +286,12 @@ class AVAXLiveTradingBot:
             self.logger.info(f"📉 Closing live position for AVAX: {reason}")
             
             # Use market_close to close the position
+            # Get current price for limit
+            current_price = self.client.get_current_price("AVAX")
             close_result = self.exchange.market_close(
-                coin="AVAX"
+                coin="AVAX",
+                px=current_price,  # Use current price as limit
+                slippage=0.001
             )
             
             if close_result and 'status' in close_result and close_result['status'] == 'ok':
