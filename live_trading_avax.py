@@ -82,7 +82,7 @@ class AVAXLiveTradingBot:
             htf_data = await self.client.get_ohlcv(
                 symbol="AVAX",
                 timeframe=self.config['HTF_TIMEFRAME'],
-                limit=20  # 2 days of 15m candles
+                limit=80  # 2 days of 15m candles
             )
             
             # Get current price
@@ -376,28 +376,56 @@ class AVAXLiveTradingBot:
         """Monitor stops every second when in a position to minimize slippage"""
         self.logger.info("🔍 Starting continuous stop monitoring for AVAX")
         self.stop_monitoring_active = True
+        monitor_count = 0
         
         while self.stop_monitoring_active and self.current_position is not None:
             try:
+                monitor_count += 1
+                
                 # Get current price
                 current_price = self.client.get_current_price("AVAX")
                 
                 if current_price is None:
+                    self.logger.debug(f"🔍 MONITOR #{monitor_count}: Failed to get current price")
                     await asyncio.sleep(0.5)
                     continue
                 
                 position = self.current_position
                 direction = position['direction']
+                entry_price = position['entry_price']
+                stop_loss = position['stop_loss']
+                
+                # Calculate current P&L and R:R ratio
+                if direction == 'long':
+                    current_pnl = current_price - entry_price
+                    current_risk = entry_price - stop_loss
+                    rr_ratio = current_pnl / current_risk if current_risk > 0 else 0
+                    stop_distance = current_price - stop_loss
+                else:  # short
+                    current_pnl = entry_price - current_price
+                    current_risk = stop_loss - entry_price
+                    rr_ratio = current_pnl / current_risk if current_risk > 0 else 0
+                    stop_distance = stop_loss - current_price
+                
+                # Log detailed monitoring info every 10 checks (every 5 seconds)
+                if monitor_count % 10 == 0:
+                    self.logger.info(f"🔍 MONITOR #{monitor_count}: AVAX {direction.upper()}")
+                    self.logger.info(f"  Price: ${current_price:.4f} | Entry: ${entry_price:.4f} | Stop: ${stop_loss:.4f}")
+                    self.logger.info(f"  P&L: ${current_pnl:.4f} | R:R: {rr_ratio:.2f} | Stop Distance: ${stop_distance:.4f}")
                 
                 # Check if stop loss is hit
                 if direction == 'long' and current_price <= position['stop_loss']:
-                    self.logger.info(f"🛑 CONTINUOUS MONITOR: STOP LOSS HIT for AVAX LONG: Price ${current_price:.4f} <= Stop ${position['stop_loss']:.4f}")
+                    self.logger.info(f"🛑 CONTINUOUS MONITOR #{monitor_count}: STOP LOSS HIT for AVAX LONG")
+                    self.logger.info(f"  Price: ${current_price:.4f} <= Stop: ${position['stop_loss']:.4f}")
+                    self.logger.info(f"  Final P&L: ${current_pnl:.4f} | R:R: {rr_ratio:.2f}")
                     send_telegram_message(f"🛑 CONTINUOUS MONITOR: AVAX LONG STOP HIT at ${position['stop_loss']:.4f}")
                     await self.close_live_position("Stop Loss Hit (Continuous Monitor)")
                     self.stop_monitoring_active = False
                     break
                 elif direction == 'short' and current_price >= position['stop_loss']:
-                    self.logger.info(f"🛑 CONTINUOUS MONITOR: STOP LOSS HIT for AVAX SHORT: Price ${current_price:.4f} >= Stop ${position['stop_loss']:.4f}")
+                    self.logger.info(f"🛑 CONTINUOUS MONITOR #{monitor_count}: STOP LOSS HIT for AVAX SHORT")
+                    self.logger.info(f"  Price: ${current_price:.4f} >= Stop: ${position['stop_loss']:.4f}")
+                    self.logger.info(f"  Final P&L: ${current_pnl:.4f} | R:R: {rr_ratio:.2f}")
                     send_telegram_message(f"🛑 CONTINUOUS MONITOR: AVAX SHORT STOP HIT at ${position['stop_loss']:.4f}")
                     await self.close_live_position("Stop Loss Hit (Continuous Monitor)")
                     self.stop_monitoring_active = False
@@ -406,14 +434,18 @@ class AVAXLiveTradingBot:
                 # Check take profit if set
                 if position.get('take_profit') is not None:
                     if direction == 'long' and current_price >= position['take_profit']:
-                        self.logger.info(f"🛑 CONTINUOUS MONITOR: TAKE PROFIT HIT for AVAX LONG: Price ${current_price:.4f} >= Target ${position['take_profit']:.4f}")
-                        send_telegram_message(f"🛑 CONTINUOUS MONITOR: AVAX LONG TAKE PROFIT at ${position['take_profit']:.4f}")
+                        self.logger.info(f"🎯 CONTINUOUS MONITOR #{monitor_count}: TAKE PROFIT HIT for AVAX LONG")
+                        self.logger.info(f"  Price: ${current_price:.4f} >= Target: ${position['take_profit']:.4f}")
+                        self.logger.info(f"  Final P&L: ${current_pnl:.4f} | R:R: {rr_ratio:.2f}")
+                        send_telegram_message(f"🎯 CONTINUOUS MONITOR: AVAX LONG TAKE PROFIT at ${position['take_profit']:.4f}")
                         await self.close_live_position("Take Profit Hit (Continuous Monitor)")
                         self.stop_monitoring_active = False
                         break
                     elif direction == 'short' and current_price <= position['take_profit']:
-                        self.logger.info(f"🛑 CONTINUOUS MONITOR: TAKE PROFIT HIT for AVAX SHORT: Price ${current_price:.4f} <= Target ${position['take_profit']:.4f}")
-                        send_telegram_message(f"🛑 CONTINUOUS MONITOR: AVAX SHORT TAKE PROFIT at ${position['take_profit']:.4f}")
+                        self.logger.info(f"🎯 CONTINUOUS MONITOR #{monitor_count}: TAKE PROFIT HIT for AVAX SHORT")
+                        self.logger.info(f"  Price: ${current_price:.4f} <= Target: ${position['take_profit']:.4f}")
+                        self.logger.info(f"  Final P&L: ${current_pnl:.4f} | R:R: {rr_ratio:.2f}")
+                        send_telegram_message(f"🎯 CONTINUOUS MONITOR: AVAX SHORT TAKE PROFIT at ${position['take_profit']:.4f}")
                         await self.close_live_position("Take Profit Hit (Continuous Monitor)")
                         self.stop_monitoring_active = False
                         break
@@ -429,20 +461,32 @@ class AVAXLiveTradingBot:
                             current_profit = position['entry_price'] - current_price
                         rr_ratio = current_profit / initial_risk
 
+                        # Log RR management every 20 checks (every 10 seconds)
+                        if monitor_count % 20 == 0:
+                            self.logger.info(f"📊 RR MONITOR #{monitor_count}: AVAX {direction.upper()}")
+                            self.logger.info(f"  Current RR: {rr_ratio:.2f} | Profit: ${current_profit:.4f} | Initial Risk: ${initial_risk:.4f}")
+                            self.logger.info(f"  Current Stop: ${position['stop_loss']:.4f} | Breakeven Stop: ${position['entry_price']:.4f}")
+
                         # If RR >= 3, move stop loss to 1:1 RR
                         if rr_ratio >= 3:
                             if position['direction'] == 'long':
                                 new_stop = position['entry_price'] + initial_risk
                                 if position['stop_loss'] < new_stop:
-                                    self.logger.info(f"Moved AVAX stop loss to 1:1 RR (${new_stop:.4f}) after reaching 3:1 RR")
+                                    old_stop = position['stop_loss']
+                                    self.logger.info(f"🔄 RR MANAGEMENT #{monitor_count}: Moving AVAX LONG stop to 1:1 RR")
+                                    self.logger.info(f"  Old Stop: ${old_stop:.4f} → New Stop: ${new_stop:.4f}")
+                                    self.logger.info(f"  RR Ratio: {rr_ratio:.2f} | Profit: ${current_profit:.4f}")
                                     position['stop_loss'] = new_stop
-                                    send_telegram_message(f"AVAX stop loss moved to 1:1 RR (${new_stop:.4f}) after 3:1 RR")
+                                    send_telegram_message(f"🔄 AVAX LONG stop moved to 1:1 RR: ${old_stop:.4f} → ${new_stop:.4f} (RR: {rr_ratio:.2f})")
                             else:
                                 new_stop = position['entry_price'] - initial_risk
                                 if position['stop_loss'] > new_stop:
-                                    self.logger.info(f"Moved AVAX stop loss to 1:1 RR (${new_stop:.4f}) after reaching 3:1 RR")
+                                    old_stop = position['stop_loss']
+                                    self.logger.info(f"🔄 RR MANAGEMENT #{monitor_count}: Moving AVAX SHORT stop to 1:1 RR")
+                                    self.logger.info(f"  Old Stop: ${old_stop:.4f} → New Stop: ${new_stop:.4f}")
+                                    self.logger.info(f"  RR Ratio: {rr_ratio:.2f} | Profit: ${current_profit:.4f}")
                                     position['stop_loss'] = new_stop
-                                    send_telegram_message(f"AVAX stop loss moved to 1:1 RR (${new_stop:.4f}) after 3:1 RR")
+                                    send_telegram_message(f"🔄 AVAX SHORT stop moved to 1:1 RR: ${old_stop:.4f} → ${new_stop:.4f} (RR: {rr_ratio:.2f})")
                 
                 # Wait 1 second before next check
                 await asyncio.sleep(0.5)
@@ -457,7 +501,7 @@ class AVAXLiveTradingBot:
         """Main live trading loop"""
         self.logger.info("🚀 Starting AVAX Live Trading Bot...")
         self.logger.info(f"Trading symbol: AVAX")
-        self.logger.info(f"Risk per trade: $10")  # FIXED: Show $10 risk
+        self.logger.info(f"Risk per trade: $1")  # FIXED: Show $10 risk
         
         candle_idx = 0  # Track candle index for cooldown
         cycle_count = 0
@@ -496,12 +540,52 @@ class AVAXLiveTradingBot:
                         # Only check for trailing stop updates in the main loop
                         if self.current_position is not None:
                             old_stop_loss = self.current_position['stop_loss']
-                            self.strategy.update_trailing_stop(ltf_data, self.current_position)
+                            self.logger.info(f"🔄 TRAILING STOP CHECK: AVAX {self.current_position['direction'].upper()}")
+                            self.logger.info(f"  Current Stop: ${old_stop_loss:.4f} | Entry: ${self.current_position['entry_price']:.4f}")
+                            
+                            # Calculate current R:R to see if trailing is enabled
+                            if self.current_position['direction'] == 'long':
+                                current_profit = current_price - self.current_position['entry_price']
+                                current_risk = self.current_position['entry_price'] - old_stop_loss
+                            else:
+                                current_profit = self.current_position['entry_price'] - current_price
+                                current_risk = old_stop_loss - self.current_position['entry_price']
+                            
+                            rr_ratio = current_profit / current_risk if current_risk > 0 else 0
+                            self.logger.info(f"  Current R:R: {rr_ratio:.2f} | Profit: ${current_profit:.4f} | Risk: ${current_risk:.4f}")
+                            
+                            # Check if trailing is enabled (R:R >= 1.0)
+                            if rr_ratio < 1.0:
+                                self.logger.info(f"  ⏳ Trailing not enabled yet - need R:R >= 1.0 (currently {rr_ratio:.2f})")
+                            else:
+                                self.logger.info(f"  ✅ Trailing enabled - R:R {rr_ratio:.2f} >= 1.0")
+                            
+                            # Update trailing stop
+                            updated = self.strategy.update_trailing_stop(ltf_data, self.current_position)
+                            
                             # For long: move stop up; for short: move stop down
                             if (self.current_position['direction'] == 'long' and self.current_position['stop_loss'] > old_stop_loss) or \
                                (self.current_position['direction'] == 'short' and self.current_position['stop_loss'] < old_stop_loss):
-                                self.logger.info(f"🔄 TRAILING STOP UPDATED for AVAX: ${old_stop_loss:.4f} → ${self.current_position['stop_loss']:.4f}")
-                                send_telegram_message(f"🔄 TRAILING STOP UPDATED: AVAX ${old_stop_loss:.4f} → ${self.current_position['stop_loss']:.4f}")
+                                new_stop = self.current_position['stop_loss']
+                                self.logger.info(f"🔄 TRAILING STOP UPDATED for AVAX {self.current_position['direction'].upper()}")
+                                self.logger.info(f"  Old Stop: ${old_stop_loss:.4f} → New Stop: ${new_stop:.4f}")
+                                self.logger.info(f"  Entry: ${self.current_position['entry_price']:.4f} | Current Price: ${current_price:.4f}")
+                                
+                                # Calculate P&L and R:R
+                                if self.current_position['direction'] == 'long':
+                                    pnl = current_price - self.current_position['entry_price']
+                                    risk = self.current_position['entry_price'] - new_stop
+                                else:
+                                    pnl = self.current_position['entry_price'] - current_price
+                                    risk = new_stop - self.current_position['entry_price']
+                                rr_ratio = pnl / risk if risk > 0 else 0
+                                
+                                self.logger.info(f"  P&L: ${pnl:.4f} | R:R: {rr_ratio:.2f}")
+                                send_telegram_message(f"🔄 TRAILING STOP UPDATED: AVAX {self.current_position['direction'].upper()} ${old_stop_loss:.4f} → ${new_stop:.4f} (R:R: {rr_ratio:.2f})")
+                            elif updated:
+                                self.logger.debug(f"🔄 Trailing stop check completed - no update needed for AVAX")
+                            else:
+                                self.logger.debug(f"🔄 Trailing stop check completed - no valid swing levels found for AVAX")
                         
                         # Check for new entry if no position
                         if self.current_position is None:
@@ -540,7 +624,7 @@ async def main():
 if __name__ == "__main__":
     print("🚀 AVAX Live Trading Bot - REAL MONEY")
     print("This bot trades AVAX with real money on Hyperliquid.")
-    print("Risk per trade: $10")
+    print("Risk per trade: $1")
     print("Bot will run INDEFINITELY until you press Ctrl+C")
     print("Make sure you have set up your Hyperliquid API key and have sufficient balance.")
     print()
