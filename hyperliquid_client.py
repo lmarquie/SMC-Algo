@@ -117,7 +117,6 @@ class HyperliquidClient:
             url = f"{self.base_url}/exchange"
             
             order_data = {
-                "type": "order",
                 "user": self.subaccount,
                 "coin": symbol,
                 "is_buy": side.lower() == "buy",
@@ -153,16 +152,55 @@ class HyperliquidClient:
     def cancel_order(self, symbol: str, order_id: str) -> Dict:
         """Cancel an existing order"""
         try:
-            url = f"{self.base_url}/exchange"
+            import time
+            import json
+            from eth_account import Account
+            from eth_account.messages import encode_defunct
             
-            payload = {
-                "action": "cancel",
-                "args": {
-                    "user": self.subaccount,
-                    "coin": symbol,
-                    "oid": order_id
-                }
+            # Get asset index for the symbol
+            asset_mapping = {
+                "AVAX": 0,
+                "BTC": 1,
+                "ETH": 2,
+                "SOL": 3
             }
+            
+            asset_index = asset_mapping.get(symbol, 0)
+            timestamp_ms = int(time.time() * 1000)
+            
+            # Create the payload without signature first
+            payload = {
+                "type": "cancel",
+                "cancels": [
+                    {
+                        "a": asset_index,  # Asset index (integer)
+                        "o": int(order_id)  # Order ID (integer)
+                    }
+                ],
+                "nonce": timestamp_ms,
+                "vaultAddress": None,
+                "expiresAfter": timestamp_ms + 60000  # Expire in 1 minute
+            }
+            
+            # Create signature using the private key
+            # Convert payload to string for signing (without signature field)
+            payload_str = json.dumps(payload, separators=(',', ':'))
+            
+            # Create the account from private key
+            account = Account.from_key(self.api_key)
+            
+            # Sign the message
+            message = encode_defunct(text=payload_str)
+            signed_message = account.sign_message(message)
+            
+            # Add the signature to the payload
+            payload["signature"] = {
+                "r": hex(signed_message.r),
+                "s": hex(signed_message.s),
+                "v": signed_message.v
+            }
+            
+            url = f"{self.base_url}/exchange"
             
             response = self.session.post(url, json=payload)
             response.raise_for_status()

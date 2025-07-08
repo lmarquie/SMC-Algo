@@ -48,6 +48,8 @@ class SOLLiveTradingBot:
         self.winning_trades = 0
         self.total_pnl = 0
         self.last_position_close_time = None  # Track last position close time for cooldown
+        self.last_order_time = None  # Track last order placement time for 5-minute pause
+        self.pending_order = None  # Track pending order for cancellation
         
         # Stop monitoring state
         self.stop_monitoring_task = None
@@ -82,7 +84,7 @@ class SOLLiveTradingBot:
             htf_data = await self.client.get_ohlcv(
                 symbol="SOL",
                 timeframe=self.config['HTF_TIMEFRAME'],
-                limit=80  # 2 days of 15m candles
+                limit=100  # 2 days of 15m candles
             )
             
             # Get current price
@@ -186,7 +188,7 @@ class SOLLiveTradingBot:
         
         return position_size, stop_loss
     
-    def open_live_position(self, setup, current_price):
+    async def open_live_position(self, setup, current_price):
         """Open a live trading position on Hyperliquid for SOL"""
         if self.current_position is not None or self.position_lock:
             self.logger.warning(f"Already in a position for SOL or position lock active, cannot open new one")
@@ -217,13 +219,59 @@ class SOLLiveTradingBot:
             self.logger.info(f"  Risk: $10")  # FIXED: Show $10 risk
             self.logger.info(f"  Leverage: {leverage}x")
             
-            # Use market_open for immediate execution
-            order_result = self.exchange.market_open(
+            # Get current BBO to calculate dynamic buffer and place order as close as possible
+            try:
+                meta = self.info.meta()
+                for asset in meta['universe']:
+                    if asset['name'] == 'SOL':
+                        best_bid = float(asset.get('bidPx', 0))
+                        best_ask = float(asset.get('askPx', 0))
+                        break
+                
+                # Calculate spread width
+                spread_width = best_ask - best_bid
+                self.logger.info(f"📊 Current BBO: ${best_bid}@${best_ask} | Spread: ${spread_width:.3f}")
+                
+                # Dynamic buffer: spread width + 1 cent safety margin
+                buffer = spread_width + 0.01  # At least 2 cents, or spread + 1 cent
+                
+                if setup['direction'] == 'long':
+                    # For BUY orders: place just below the bid (as close as possible)
+                    limit_price = round(best_bid - buffer, 3)
+                    self.logger.info(f"  BUY order: ${limit_price:.3f} (${best_bid - limit_price:.3f} below bid)")
+                else:  # short
+                    # For SELL orders: place just above the ask (as close as possible)
+                    limit_price = round(best_ask + buffer, 3)
+                    self.logger.info(f"  SELL order: ${limit_price:.3f} (${limit_price - best_ask:.3f} above ask)")
+                
+            except Exception as e:
+                self.logger.warning(f"Could not get BBO, using current price with fixed buffer: {e}")
+                # Fallback to current price with fixed buffer
+                current_price = self.client.get_current_price("SOL")
+                if setup['direction'] == 'long':
+                    limit_price = round(current_price - 0.05, 3)  # 5 cent buffer below
+                else:
+                    limit_price = round(current_price + 0.05, 3)  # 5 cent buffer above
+            
+            # Round and remove trailing zeros from actual order price
+            limit_price = round(limit_price, 3)
+            # Convert to string and remove trailing zeros, then back to float
+            limit_price = float(f"{limit_price:.3f}".rstrip('0').rstrip('.'))
+            self.logger.info(f"  Final Entry Price: ${limit_price}")
+            
+            # Use limit order as close to current price as possible (ALO - Always Limit Order for maker fees)
+            self.logger.info(f"📋 PLACING ORDER: SOL {'BUY' if is_buy else 'SELL'} {position_size} @ ${limit_price:.4f}")
+            
+            order_result = self.exchange.order(
                 name="SOL",
                 is_buy=is_buy,
                 sz=position_size,
-                slippage=0.001
+                limit_px=limit_price,
+                order_type={"limit": {"tif": "Alo"}},
+                reduce_only=False
             )
+            
+            self.logger.info(f"📋 IMMEDIATE ORDER RESULT: {order_result}")
             
             if order_result and 'status' in order_result and order_result['status'] == 'ok':
                 # Extract order information
@@ -256,15 +304,38 @@ class SOLLiveTradingBot:
                         f"Stop: ${final_stop:.4f} | Size: {actual_size:.4f} | Risk: $10"  # FIXED: Show $10 risk
                     )
                     
+                    # Set 5-minute pause after placing order
+                    self.last_order_time = datetime.now()
+                    self.logger.info(f"⏳ Order filled immediately, 5-minute pause started")
+                    
                     # Start stop monitoring
                     self.start_stop_monitoring()
                     
                     self.position_lock = False
                     return True
                 else:
-                    self.logger.error(f"Order filled but no fill data: {order_result}")
+                    # Order placed but not filled yet - wait 7 minutes then cancel
+                    self.logger.info(f"⏳ Limit order placed but not filled yet. Waiting 7 minutes...")
+                    send_telegram_message(f"⏳ SOL limit order placed at ${limit_price:.4f} - waiting 7 minutes for fill")
+                    
+                    # Store order info for cancellation
+                    order_id = order_result.get('response', {}).get('data', {}).get('statuses', [{}])[0].get('oid')
+                    
+                    # Store order info and return - let main loop handle monitoring
+                    self.pending_order = {
+                        'order_id': order_id,
+                        'stop_loss': final_stop,
+                        'take_profit': setup.get('take_profit'),
+                        'reason': setup['reason'],
+                        'leverage': leverage,
+                        'direction': setup['direction']
+                    }
+                    
+                    # Set 5-minute pause after placing order
+                    self.last_order_time = datetime.now()
+                    self.logger.info(f"⏳ Limit order placed, 5-minute pause started. Returning to main loop for monitoring")
                     self.position_lock = False
-                    return False
+                    return True  # Return True to indicate order was placed successfully
             else:
                 self.logger.error(f"Failed to place order: {order_result}")
                 self.position_lock = False
@@ -284,9 +355,16 @@ class SOLLiveTradingBot:
         try:
             self.logger.info(f"📉 Closing live position for SOL: {reason}")
             
-            # Use market_close to close the position
-            close_result = self.exchange.market_close(
-                coin="SOL"
+            # Use limit_close to close the position
+            # Get current price for limit
+            current_price = self.client.get_current_price("SOL")
+            close_result = self.exchange.order(
+                name="SOL",
+                is_buy=not (self.current_position['direction'] == 'long'),  # Opposite of entry direction
+                sz=self.current_position['size'],
+                limit_px=current_price,
+                order_type={"limit": {"tif": "Gtc"}},
+                reduce_only=True
             )
             
             if close_result and 'status' in close_result and close_result['status'] == 'ok':
@@ -517,6 +595,44 @@ class SOLLiveTradingBot:
                         await asyncio.sleep(0.5)
                         continue
                     
+                    # Check if we have a pending order - monitor and cancel after 7 minutes
+                    if self.pending_order:
+                        # Check if order has been pending for more than 7 minutes
+                        order_placement_time = self.last_order_time
+                        if order_placement_time:
+                            time_since_order = datetime.now() - order_placement_time
+                            if time_since_order.total_seconds() > 420:  # 7 minutes = 420 seconds
+                                self.logger.info(f"⏰ Order pending for 7+ minutes, cancelling...")
+                                send_telegram_message(f"⏰ SOL order pending for 7+ minutes, cancelling...")
+                                
+                                try:
+                                    self.client.cancel_order("SOL", self.pending_order['order_id'])
+                                    self.logger.info(f"✅ Order cancelled successfully")
+                                    send_telegram_message(f"✅ SOL order cancelled successfully")
+                                except Exception as e:
+                                    self.logger.error(f"❌ Failed to cancel order: {e}")
+                                    send_telegram_message(f"❌ Failed to cancel SOL order: {e}")
+                                
+                                self.pending_order = None
+                                continue
+                            else:
+                                remaining_time = 420 - time_since_order.total_seconds()
+                                self.logger.info(f"⏳ Pending order exists, {remaining_time:.0f}s remaining before cancellation")
+                        
+                        await asyncio.sleep(0.5)
+                        continue
+                    
+                    # Check 5-minute pause after placing orders
+                    pause_remaining = None
+                    if self.last_order_time:
+                        time_since_order = datetime.now() - self.last_order_time
+                        pause_remaining = 300 - time_since_order.total_seconds()  # 5 minutes = 300 seconds
+                    
+                    if pause_remaining and pause_remaining > 0:
+                        self.logger.info(f"⏳ ORDER PAUSE ACTIVE for SOL: {pause_remaining:.0f} seconds remaining")
+                        await asyncio.sleep(0.5)
+                        continue
+                    
                     # Check cooldown period (5 minutes instead of 1 minute)
                     cooldown_remaining = None
                     if self.last_position_close_time:
@@ -581,6 +697,21 @@ class SOLLiveTradingBot:
                                 rr_ratio = pnl / risk if risk > 0 else 0
                                 
                                 self.logger.info(f"  P&L: ${pnl:.4f} | R:R: {rr_ratio:.2f}")
+                                
+                                # Place limit order at new trailing stop level
+                                try:
+                                    stop_order = self.exchange.order(
+                                        name="SOL",
+                                        is_buy=not (self.current_position['direction'] == 'long'),  # Opposite of entry direction
+                                        sz=self.current_position['size'],
+                                        limit_px=new_stop,
+                                        order_type={"limit": {"tif": "Gtc"}},
+                                        reduce_only=True
+                                    )
+                                    self.logger.info(f"📉 Placed trailing stop limit order at: ${new_stop:.4f}")
+                                except Exception as e:
+                                    self.logger.error(f"Failed to place trailing stop order: {e}")
+                                
                                 send_telegram_message(f"🔄 TRAILING STOP UPDATED: SOL {self.current_position['direction'].upper()} ${old_stop_loss:.4f} → ${new_stop:.4f} (R:R: {rr_ratio:.2f})")
                             elif updated:
                                 self.logger.debug(f"🔄 Trailing stop check completed - no update needed for SOL")
@@ -594,7 +725,7 @@ class SOLLiveTradingBot:
                                 setup['symbol'] = 'SOL'  # Add symbol to setup
                                 # Only log locally, don't send Telegram for setups
                                 self.logger.info(f"✅ Setup found for SOL: {setup['direction']} at ${setup['entry_price']:.2f}")
-                                success = self.open_live_position(setup, current_price)
+                                success = await self.open_live_position(setup, current_price)
                                 if not success:
                                     self.logger.error(f"❌ FAILED to open position for SOL")
                                 else:

@@ -143,7 +143,7 @@ class FVGStrategy:
         larger_trend = self.identify_larger_trend(htf_df)
         
         # Make trend confidence requirement stricter
-        if larger_trend['confidence'] < 0.6:  # Increased from 0.4 to 0.6
+        if larger_trend['confidence'] < 0.50:  # Set to 50% confidence
             return None
         
         # Step 2: Detect pullback against the larger trend
@@ -180,7 +180,7 @@ class FVGStrategy:
             if self.analyzer.check_fvg_touch(current_price, fvg):
                 # Analyze the DataFrame to get structure columns
                 df_analyzed = self.analyzer.analyze_structure(df)
-                recent_df = df_analyzed.tail(5)  # Reduced from 8 to 5 candles - stricter
+                recent_df = df_analyzed.tail(10)  # Increased from 5 to 10 candles - more opportunities
                 
                 # Look for bullish BOS or MSS (reversal signal) - make stricter
                 has_bullish_reversal = (
@@ -231,7 +231,7 @@ class FVGStrategy:
             if self.analyzer.check_fvg_touch(current_price, fvg):
                 # Analyze the DataFrame to get structure columns
                 df_analyzed = self.analyzer.analyze_structure(df)
-                recent_df = df_analyzed.tail(5)  # Reduced from 8 to 5 candles - stricter
+                recent_df = df_analyzed.tail(10)  # Increased from 5 to 10 candles - more opportunities
                 
                 # Look for bearish BOS or MSS (reversal signal) - make stricter
                 has_bearish_reversal = (
@@ -430,19 +430,33 @@ class FVGStrategy:
                 new_stop = best_swing_low - self.config.get('STOP_LOSS_BUFFER', 0.005)
                 # Only move stop up (more favorable) - NEVER move down for longs
                 if new_stop > position['stop_loss']:
-                    # Check if price has stayed above the swing low for required number of candles
-                    confirmation_candles = self.config.get('TRAILING_CONFIRMATION_CANDLES', 3)
+                    # Check if price has stayed above the swing low for required number of candles (2 before + 2 after)
+                    confirmation_candles = 2  # 2 candles before + 2 candles after
                     swing_low_idx = swing_lows.index[-1]
-                    # Get candles after the swing low
+                    
+                    # Get 2 candles before the swing low
+                    candles_before_swing = df_analyzed.loc[:swing_low_idx].tail(confirmation_candles + 1)  # +1 to include swing candle
+                    # Get 2 candles after the swing low
                     candles_after_swing = df_analyzed.loc[swing_low_idx:].tail(confirmation_candles + 1)  # +1 to include swing candle
-                    # Check if all candles after swing low have stayed above it
-                    if len(candles_after_swing) >= confirmation_candles:
-                        low_crossed = False
+                    
+                    # Check if we have enough candles on both sides
+                    if len(candles_before_swing) >= confirmation_candles and len(candles_after_swing) >= confirmation_candles:
+                        # Check if 2 candles before swing low were above it
+                        before_low_crossed = False
+                        for _, candle in candles_before_swing.head(confirmation_candles).iterrows():
+                            if candle['low'] <= best_swing_low:
+                                before_low_crossed = True
+                                break
+                        
+                        # Check if 2 candles after swing low stayed above it
+                        after_low_crossed = False
                         for _, candle in candles_after_swing.tail(confirmation_candles).iterrows():
                             if candle['low'] <= best_swing_low:
-                                low_crossed = True
+                                after_low_crossed = True
                                 break
-                        if not low_crossed:
+                        
+                        # Only update if both sides confirm (2 before + 2 after)
+                        if not before_low_crossed and not after_low_crossed:
                             if position['stop_loss'] != new_stop:
                                 position['stop_loss'] = new_stop
                                 position['last_stop_update_idx'] = swing_lows.index[-1]
@@ -477,19 +491,33 @@ class FVGStrategy:
                 new_stop = best_swing_high + self.config.get('STOP_LOSS_BUFFER', 0.005)
                 # Only move stop down (more favorable) - NEVER move up for shorts
                 if new_stop < position['stop_loss']:
-                    # Check if price has stayed below the swing high for required number of candles
-                    confirmation_candles = self.config.get('TRAILING_CONFIRMATION_CANDLES', 3)
+                    # Check if price has stayed below the swing high for required number of candles (2 before + 2 after)
+                    confirmation_candles = 2  # 2 candles before + 2 candles after
                     swing_high_idx = swing_highs.index[-1]
-                    # Get candles after the swing high
+                    
+                    # Get 2 candles before the swing high
+                    candles_before_swing = df_analyzed.loc[:swing_high_idx].tail(confirmation_candles + 1)  # +1 to include swing candle
+                    # Get 2 candles after the swing high
                     candles_after_swing = df_analyzed.loc[swing_high_idx:].tail(confirmation_candles + 1)  # +1 to include swing candle
-                    # Check if all candles after swing high have stayed below it
-                    if len(candles_after_swing) >= confirmation_candles:
-                        high_crossed = False
+                    
+                    # Check if we have enough candles on both sides
+                    if len(candles_before_swing) >= confirmation_candles and len(candles_after_swing) >= confirmation_candles:
+                        # Check if 2 candles before swing high were below it
+                        before_high_crossed = False
+                        for _, candle in candles_before_swing.head(confirmation_candles).iterrows():
+                            if candle['high'] >= best_swing_high:
+                                before_high_crossed = True
+                                break
+                        
+                        # Check if 2 candles after swing high stayed below it
+                        after_high_crossed = False
                         for _, candle in candles_after_swing.tail(confirmation_candles).iterrows():
                             if candle['high'] >= best_swing_high:
-                                high_crossed = True
+                                after_high_crossed = True
                                 break
-                        if not high_crossed:
+                        
+                        # Only update if both sides confirm (2 before + 2 after)
+                        if not before_high_crossed and not after_high_crossed:
                             if position['stop_loss'] != new_stop:
                                 position['stop_loss'] = new_stop
                                 position['last_stop_update_idx'] = swing_highs.index[-1]

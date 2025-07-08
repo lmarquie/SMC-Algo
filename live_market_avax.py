@@ -7,12 +7,12 @@ from hyperliquid_client import HyperliquidClient
 from config import *
 from notifications import send_telegram_message
 
-class ETHLiveTradingBot:
+class AVAXLiveTradingBot:
     def __init__(self):
         self.config = {
             'HYPERLIQUID_API_KEY': HYPERLIQUID_API_KEY,
             'HYPERLIQUID_SUBACCOUNT': HYPERLIQUID_SUBACCOUNT,
-            'SYMBOLS': ["ETH"],  # Only ETH
+            'SYMBOLS': ["AVAX"],  # Only AVAX
             'TIMEFRAME': TIMEFRAME,
             'HTF_TIMEFRAME': HTF_TIMEFRAME,
             'POSITION_SIZE': POSITION_SIZE,
@@ -48,8 +48,6 @@ class ETHLiveTradingBot:
         self.winning_trades = 0
         self.total_pnl = 0
         self.last_position_close_time = None  # Track last position close time for cooldown
-        self.last_order_time = None  # Track last order placement time for 5-minute pause
-        self.pending_order = None  # Track pending order for cancellation
         
         # Stop monitoring state
         self.stop_monitoring_task = None
@@ -69,52 +67,52 @@ class ETHLiveTradingBot:
         )
     
     async def fetch_live_data(self):
-        """Fetch live market data for ETH"""
+        """Fetch live market data for AVAX"""
         try:
-            self.logger.info(f"Fetching live data for ETH...")
+            self.logger.info(f"Fetching live data for AVAX...")
             
             # Fetch LTF data (1m) - increase to 1000 candles
             ltf_data = await self.client.get_ohlcv(
-                symbol="ETH",
+                symbol="AVAX",
                 timeframe=self.config['TIMEFRAME'],
                 limit=500
             )
             
             # Fetch HTF data (15m) - reduced to 192 candles
             htf_data = await self.client.get_ohlcv(
-                symbol="ETH",
+                symbol="AVAX",
                 timeframe=self.config['HTF_TIMEFRAME'],
                 limit=100  # 2 days of 15m candles
             )
             
             # Get current price
-            current_price = self.client.get_current_price("ETH")
+            current_price = self.client.get_current_price("AVAX")
             
             if ltf_data.empty or htf_data.empty:
-                self.logger.error(f"Failed to fetch market data for ETH")
+                self.logger.error(f"Failed to fetch market data for AVAX")
                 return None, None, None
             
             return ltf_data, htf_data, current_price
             
         except Exception as e:
-            self.logger.error(f"Error fetching live data for ETH: {e}")
+            self.logger.error(f"Error fetching live data for AVAX: {e}")
             return None, None, None
     
     def calculate_position_size(self, entry_price, stop_loss, direction):
         """Calculate position size based on risk management rules with capital and leverage constraints"""
-        # ETH-specific: Ensure minimum 3-cent stop loss distance
+        # AVAX-specific: Ensure minimum 3-cent stop loss distance
         min_stop_distance = 0.03  # 3 cents minimum
         
         if direction == 'long':
             current_stop_distance = entry_price - stop_loss
             if current_stop_distance < min_stop_distance:
                 stop_loss = entry_price - min_stop_distance
-                self.logger.info(f"ETH: Stop loss adjusted to minimum 3-cent distance: ${stop_loss:.4f}")
+                self.logger.info(f"AVAX: Stop loss adjusted to minimum 3-cent distance: ${stop_loss:.4f}")
         else:  # short
             current_stop_distance = stop_loss - entry_price
             if current_stop_distance < min_stop_distance:
                 stop_loss = entry_price + min_stop_distance
-                self.logger.info(f"ETH: Stop loss adjusted to minimum 3-cent distance: ${stop_loss:.4f}")
+                self.logger.info(f"AVAX: Stop loss adjusted to minimum 3-cent distance: ${stop_loss:.4f}")
         
         # FIXED: Use $10 fixed risk as originally requested
         target_risk = 1  # $10 fixed risk (as you wanted)
@@ -136,13 +134,13 @@ class ETHLiveTradingBot:
         # Calculate position value (size × entry price)
         position_value = position_size * entry_price
         
-        # Get leverage for ETH
-        leverage = self.config['MAX_LEVERAGE'].get("ETH", 10)  # Use 10x for ETH
+        # Get leverage for AVAX
+        leverage = self.config['MAX_LEVERAGE'].get("AVAX", 10)  # Use 10x for AVAX
         
         # Capital constraints: $10,000 capital with leverage = max position value
         max_position_value = 10000 * leverage
         
-        self.logger.info(f"DEBUG: Position calculation for ETH:")
+        self.logger.info(f"DEBUG: Position calculation for AVAX:")
         self.logger.info(f"  Entry: ${entry_price:.4f}, Stop: ${stop_loss:.4f}")
         self.logger.info(f"  Risk amount: ${risk_amount:.4f}")
         self.logger.info(f"  Position size: {position_size:.2f}")
@@ -188,90 +186,45 @@ class ETHLiveTradingBot:
         
         return position_size, stop_loss
     
-    async def open_live_position(self, setup, current_price):
-        """Open a live trading position on Hyperliquid for ETH"""
+    def open_live_position(self, setup, current_price):
+        """Open a live trading position on Hyperliquid for AVAX"""
         if self.current_position is not None or self.position_lock:
-            self.logger.warning(f"Already in a position for ETH or position lock active, cannot open new one")
+            self.logger.warning(f"Already in a position for AVAX or position lock active, cannot open new one")
             return False
         
         try:
             # Set position lock to prevent race conditions
             self.position_lock = True
             
-            self.logger.info(f"DEBUG: Opening live position for ETH with setup: {setup}")
+            self.logger.info(f"DEBUG: Opening live position for AVAX with setup: {setup}")
             
             position_size, adjusted_stop = self.calculate_position_size(setup['entry_price'], setup['stop_loss'], setup['direction'])
             
             # Use adjusted stop if it was changed
             final_stop = adjusted_stop if adjusted_stop != setup['stop_loss'] else setup['stop_loss']
             
-            # Get leverage for ETH
-            leverage = self.config['MAX_LEVERAGE'].get("ETH", 10)
+            # Get leverage for AVAX
+            leverage = self.config['MAX_LEVERAGE'].get("AVAX", 10)
             
             # Place the actual order on Hyperliquid using market_open
             is_buy = setup['direction'] == 'long'
             
-            self.logger.info(f"📈 Opening live position for ETH:")
+            self.logger.info(f"📈 Opening live position for AVAX (INSTANT EXECUTION):")
             self.logger.info(f"  Direction: {setup['direction'].upper()}")
-            self.logger.info(f"  Entry: ${setup['entry_price']:.4f}")
+            self.logger.info(f"  Target Entry: ${setup['entry_price']:.4f}")
             self.logger.info(f"  Stop: ${final_stop:.4f}")
             self.logger.info(f"  Size: {position_size:.4f}")
             self.logger.info(f"  Risk: $10")  # FIXED: Show $10 risk
             self.logger.info(f"  Leverage: {leverage}x")
             
-            # Get current BBO to calculate dynamic buffer and place order as close as possible
-            try:
-                meta = self.info.meta()
-                for asset in meta['universe']:
-                    if asset['name'] == 'ETH':
-                        best_bid = float(asset.get('bidPx', 0))
-                        best_ask = float(asset.get('askPx', 0))
-                        break
-                
-                # Calculate spread width
-                spread_width = best_ask - best_bid
-                self.logger.info(f"📊 Current BBO: ${best_bid}@${best_ask} | Spread: ${spread_width:.3f}")
-                
-                # Dynamic buffer: spread width + 1 cent safety margin
-                buffer = spread_width + 0.01  # At least 2 cents, or spread + 1 cent
-                
-                if setup['direction'] == 'long':
-                    # For BUY orders: place just below the bid (as close as possible)
-                    limit_price = round(best_bid - buffer, 3)
-                    self.logger.info(f"  BUY order: ${limit_price:.3f} (${best_bid - limit_price:.3f} below bid)")
-                else:  # short
-                    # For SELL orders: place just above the ask (as close as possible)
-                    limit_price = round(best_ask + buffer, 3)
-                    self.logger.info(f"  SELL order: ${limit_price:.3f} (${limit_price - best_ask:.3f} above ask)")
-                
-            except Exception as e:
-                self.logger.warning(f"Could not get BBO, using current price with fixed buffer: {e}")
-                # Fallback to current price with fixed buffer
-                current_price = self.client.get_current_price("ETH")
-                if setup['direction'] == 'long':
-                    limit_price = round(current_price - 0.05, 3)  # 5 cent buffer below
-                else:
-                    limit_price = round(current_price + 0.05, 3)  # 5 cent buffer above
-            
-            # Round and remove trailing zeros from actual order price
-            limit_price = round(limit_price, 3)
-            # Convert to string and remove trailing zeros, then back to float
-            limit_price = float(f"{limit_price:.3f}".rstrip('0').rstrip('.'))
-            self.logger.info(f"  Final Entry Price: ${limit_price}")
-            
-            # Use limit order as close to current price as possible (ALO - Always Limit Order for maker fees)
-            self.logger.info(f"📋 PLACING ORDER: ETH {'BUY' if is_buy else 'SELL'} {position_size} @ ${limit_price:.4f}")
-            
-            order_result = self.exchange.order(
-                name="ETH",
+            # Use market_open for instant execution
+            order_result = self.exchange.market_open(
+                name="AVAX",
                 is_buy=is_buy,
                 sz=position_size,
-                limit_px=limit_price,
-                order_type={"limit": {"tif": "Alo"}},
-                reduce_only=False
+                px=None,  # No limit price - instant market execution
+                slippage=0.001
             )
-            
-            self.logger.info(f"📋 IMMEDIATE ORDER RESULT: {order_result}")
             
             if order_result and 'status' in order_result and order_result['status'] == 'ok':
                 # Extract order information
@@ -293,20 +246,16 @@ class ETHLiveTradingBot:
                         'order_id': filled_data.get('oid')
                     }
                     
-                    self.logger.info(f"✅ LIVE POSITION OPENED FOR ETH:")
+                    self.logger.info(f"✅ LIVE POSITION OPENED FOR AVAX:")
                     self.logger.info(f"  Actual Entry: ${actual_entry_price:.4f}")
                     self.logger.info(f"  Actual Size: {actual_size:.4f}")
                     self.logger.info(f"  Order ID: {filled_data.get('oid')}")
                     
                     # Send Telegram notification
                     send_telegram_message(
-                        f" LIVE TRADE OPENED: ETH {setup['direction'].upper()} at ${actual_entry_price:.4f} | "
+                        f" LIVE TRADE OPENED: AVAX {setup['direction'].upper()} at ${actual_entry_price:.4f} | "
                         f"Stop: ${final_stop:.4f} | Size: {actual_size:.4f} | Risk: $10"  # FIXED: Show $10 risk
                     )
-                    
-                    # Set 5-minute pause after placing order
-                    self.last_order_time = datetime.now()
-                    self.logger.info(f"⏳ Order filled immediately, 5-minute pause started")
                     
                     # Start stop monitoring
                     self.start_stop_monitoring()
@@ -314,28 +263,9 @@ class ETHLiveTradingBot:
                     self.position_lock = False
                     return True
                 else:
-                    # Order placed but not filled yet - wait 7 minutes then cancel
-                    self.logger.info(f"⏳ Limit order placed but not filled yet. Waiting 7 minutes...")
-                    send_telegram_message(f"⏳ ETH limit order placed at ${limit_price:.4f} - waiting 7 minutes for fill")
-                    
-                    # Store order info for cancellation
-                    order_id = order_result.get('response', {}).get('data', {}).get('statuses', [{}])[0].get('oid')
-                    
-                    # Store order info and return - let main loop handle monitoring
-                    self.pending_order = {
-                        'order_id': order_id,
-                        'stop_loss': final_stop,
-                        'take_profit': setup.get('take_profit'),
-                        'reason': setup['reason'],
-                        'leverage': leverage,
-                        'direction': setup['direction']
-                    }
-                    
-                    # Set 5-minute pause after placing order
-                    self.last_order_time = datetime.now()
-                    self.logger.info(f"⏳ Limit order placed, 5-minute pause started. Returning to main loop for monitoring")
+                    self.logger.error(f"Order filled but no fill data: {order_result}")
                     self.position_lock = False
-                    return True  # Return True to indicate order was placed successfully
+                    return False
             else:
                 self.logger.error(f"Failed to place order: {order_result}")
                 self.position_lock = False
@@ -353,18 +283,13 @@ class ETHLiveTradingBot:
             return False
         
         try:
-            self.logger.info(f"📉 Closing live position for ETH: {reason}")
+            self.logger.info(f"📉 Closing live position for AVAX: {reason}")
             
-            # Use limit_close to close the position
-            # Get current price for limit
-            current_price = self.client.get_current_price("ETH")
-            close_result = self.exchange.order(
-                name="ETH",
-                is_buy=not (self.current_position['direction'] == 'long'),  # Opposite of entry direction
-                sz=self.current_position['size'],
-                limit_px=current_price,
-                order_type={"limit": {"tif": "Gtc"}},
-                reduce_only=True
+            # Use market_close for instant execution
+            close_result = self.exchange.market_close(
+                coin="AVAX",
+                px=None,  # No limit price - instant market execution
+                slippage=0.001
             )
             
             if close_result and 'status' in close_result and close_result['status'] == 'ok':
@@ -404,7 +329,7 @@ class ETHLiveTradingBot:
                     }
                     self.trade_history.append(trade_record)
                     
-                    self.logger.info(f"✅ LIVE POSITION CLOSED FOR ETH:")
+                    self.logger.info(f"✅ LIVE POSITION CLOSED FOR AVAX:")
                     self.logger.info(f"  Exit Price: ${close_price:.4f}")
                     self.logger.info(f"  P&L: ${pnl:.2f}")
                     self.logger.info(f"  Reason: {reason}")
@@ -414,7 +339,7 @@ class ETHLiveTradingBot:
                     # Send Telegram notification
                     pnl_emoji = "" if pnl > 0 else "🔴"
                     send_telegram_message(
-                        f"{pnl_emoji} LIVE TRADE CLOSED: ETH at ${close_price:.4f} | "
+                        f"{pnl_emoji} LIVE TRADE CLOSED: AVAX at ${close_price:.4f} | "
                         f"P&L: ${pnl:.2f} | Reason: {reason} | Total: ${self.total_pnl:.2f}"
                     )
                     
@@ -441,18 +366,18 @@ class ETHLiveTradingBot:
         """Start the continuous stop monitoring task"""
         if self.current_position is not None and not self.stop_monitoring_active:
             self.stop_monitoring_task = asyncio.create_task(self.monitor_stops_continuously())
-            self.logger.info("Started continuous stop monitoring for ETH")
+            self.logger.info("Started continuous stop monitoring for AVAX")
     
     def stop_stop_monitoring(self):
         """Stop the continuous stop monitoring task"""
         self.stop_monitoring_active = False
         if self.stop_monitoring_task and not self.stop_monitoring_task.done():
             self.stop_monitoring_task.cancel()
-        self.logger.info("Stopped continuous stop monitoring for ETH")
+        self.logger.info("Stopped continuous stop monitoring for AVAX")
     
     async def monitor_stops_continuously(self):
         """Monitor stops every second when in a position to minimize slippage"""
-        self.logger.info("🔍 Starting continuous stop monitoring for ETH")
+        self.logger.info("🔍 Starting continuous stop monitoring for AVAX")
         self.stop_monitoring_active = True
         monitor_count = 0
         
@@ -461,7 +386,7 @@ class ETHLiveTradingBot:
                 monitor_count += 1
                 
                 # Get current price
-                current_price = self.client.get_current_price("ETH")
+                current_price = self.client.get_current_price("AVAX")
                 
                 if current_price is None:
                     self.logger.debug(f"🔍 MONITOR #{monitor_count}: Failed to get current price")
@@ -487,24 +412,24 @@ class ETHLiveTradingBot:
                 
                 # Log detailed monitoring info every 10 checks (every 5 seconds)
                 if monitor_count % 10 == 0:
-                    self.logger.info(f"🔍 MONITOR #{monitor_count}: ETH {direction.upper()}")
+                    self.logger.info(f"🔍 MONITOR #{monitor_count}: AVAX {direction.upper()}")
                     self.logger.info(f"  Price: ${current_price:.4f} | Entry: ${entry_price:.4f} | Stop: ${stop_loss:.4f}")
                     self.logger.info(f"  P&L: ${current_pnl:.4f} | R:R: {rr_ratio:.2f} | Stop Distance: ${stop_distance:.4f}")
                 
                 # Check if stop loss is hit
                 if direction == 'long' and current_price <= position['stop_loss']:
-                    self.logger.info(f"🛑 CONTINUOUS MONITOR #{monitor_count}: STOP LOSS HIT for ETH LONG")
+                    self.logger.info(f"🛑 CONTINUOUS MONITOR #{monitor_count}: STOP LOSS HIT for AVAX LONG")
                     self.logger.info(f"  Price: ${current_price:.4f} <= Stop: ${position['stop_loss']:.4f}")
                     self.logger.info(f"  Final P&L: ${current_pnl:.4f} | R:R: {rr_ratio:.2f}")
-                    send_telegram_message(f"🛑 CONTINUOUS MONITOR: ETH LONG STOP HIT at ${position['stop_loss']:.4f}")
+                    send_telegram_message(f"🛑 CONTINUOUS MONITOR: AVAX LONG STOP HIT at ${position['stop_loss']:.4f}")
                     await self.close_live_position("Stop Loss Hit (Continuous Monitor)")
                     self.stop_monitoring_active = False
                     break
                 elif direction == 'short' and current_price >= position['stop_loss']:
-                    self.logger.info(f"🛑 CONTINUOUS MONITOR #{monitor_count}: STOP LOSS HIT for ETH SHORT")
+                    self.logger.info(f"🛑 CONTINUOUS MONITOR #{monitor_count}: STOP LOSS HIT for AVAX SHORT")
                     self.logger.info(f"  Price: ${current_price:.4f} >= Stop: ${position['stop_loss']:.4f}")
                     self.logger.info(f"  Final P&L: ${current_pnl:.4f} | R:R: {rr_ratio:.2f}")
-                    send_telegram_message(f"🛑 CONTINUOUS MONITOR: ETH SHORT STOP HIT at ${position['stop_loss']:.4f}")
+                    send_telegram_message(f"🛑 CONTINUOUS MONITOR: AVAX SHORT STOP HIT at ${position['stop_loss']:.4f}")
                     await self.close_live_position("Stop Loss Hit (Continuous Monitor)")
                     self.stop_monitoring_active = False
                     break
@@ -512,18 +437,18 @@ class ETHLiveTradingBot:
                 # Check take profit if set
                 if position.get('take_profit') is not None:
                     if direction == 'long' and current_price >= position['take_profit']:
-                        self.logger.info(f"🎯 CONTINUOUS MONITOR #{monitor_count}: TAKE PROFIT HIT for ETH LONG")
+                        self.logger.info(f"🎯 CONTINUOUS MONITOR #{monitor_count}: TAKE PROFIT HIT for AVAX LONG")
                         self.logger.info(f"  Price: ${current_price:.4f} >= Target: ${position['take_profit']:.4f}")
                         self.logger.info(f"  Final P&L: ${current_pnl:.4f} | R:R: {rr_ratio:.2f}")
-                        send_telegram_message(f"🎯 CONTINUOUS MONITOR: ETH LONG TAKE PROFIT at ${position['take_profit']:.4f}")
+                        send_telegram_message(f"🎯 CONTINUOUS MONITOR: AVAX LONG TAKE PROFIT at ${position['take_profit']:.4f}")
                         await self.close_live_position("Take Profit Hit (Continuous Monitor)")
                         self.stop_monitoring_active = False
                         break
                     elif direction == 'short' and current_price <= position['take_profit']:
-                        self.logger.info(f"🎯 CONTINUOUS MONITOR #{monitor_count}: TAKE PROFIT HIT for ETH SHORT")
+                        self.logger.info(f"🎯 CONTINUOUS MONITOR #{monitor_count}: TAKE PROFIT HIT for AVAX SHORT")
                         self.logger.info(f"  Price: ${current_price:.4f} <= Target: ${position['take_profit']:.4f}")
                         self.logger.info(f"  Final P&L: ${current_pnl:.4f} | R:R: {rr_ratio:.2f}")
-                        send_telegram_message(f"🎯 CONTINUOUS MONITOR: ETH SHORT TAKE PROFIT at ${position['take_profit']:.4f}")
+                        send_telegram_message(f"🎯 CONTINUOUS MONITOR: AVAX SHORT TAKE PROFIT at ${position['take_profit']:.4f}")
                         await self.close_live_position("Take Profit Hit (Continuous Monitor)")
                         self.stop_monitoring_active = False
                         break
@@ -541,7 +466,7 @@ class ETHLiveTradingBot:
 
                         # Log RR management every 20 checks (every 10 seconds)
                         if monitor_count % 20 == 0:
-                            self.logger.info(f"📊 RR MONITOR #{monitor_count}: ETH {direction.upper()}")
+                            self.logger.info(f"📊 RR MONITOR #{monitor_count}: AVAX {direction.upper()}")
                             self.logger.info(f"  Current RR: {rr_ratio:.2f} | Profit: ${current_profit:.4f} | Initial Risk: ${initial_risk:.4f}")
                             self.logger.info(f"  Current Stop: ${position['stop_loss']:.4f} | Breakeven Stop: ${position['entry_price']:.4f}")
 
@@ -551,20 +476,20 @@ class ETHLiveTradingBot:
                                 new_stop = position['entry_price'] + initial_risk
                                 if position['stop_loss'] < new_stop:
                                     old_stop = position['stop_loss']
-                                    self.logger.info(f"🔄 RR MANAGEMENT #{monitor_count}: Moving ETH LONG stop to 1:1 RR")
+                                    self.logger.info(f"🔄 RR MANAGEMENT #{monitor_count}: Moving AVAX LONG stop to 1:1 RR")
                                     self.logger.info(f"  Old Stop: ${old_stop:.4f} → New Stop: ${new_stop:.4f}")
                                     self.logger.info(f"  RR Ratio: {rr_ratio:.2f} | Profit: ${current_profit:.4f}")
                                     position['stop_loss'] = new_stop
-                                    send_telegram_message(f"🔄 ETH LONG stop moved to 1:1 RR: ${old_stop:.4f} → ${new_stop:.4f} (RR: {rr_ratio:.2f})")
+                                    send_telegram_message(f"🔄 AVAX LONG stop moved to 1:1 RR: ${old_stop:.4f} → ${new_stop:.4f} (RR: {rr_ratio:.2f})")
                             else:
                                 new_stop = position['entry_price'] - initial_risk
                                 if position['stop_loss'] > new_stop:
                                     old_stop = position['stop_loss']
-                                    self.logger.info(f"🔄 RR MANAGEMENT #{monitor_count}: Moving ETH SHORT stop to 1:1 RR")
+                                    self.logger.info(f"🔄 RR MANAGEMENT #{monitor_count}: Moving AVAX SHORT stop to 1:1 RR")
                                     self.logger.info(f"  Old Stop: ${old_stop:.4f} → New Stop: ${new_stop:.4f}")
                                     self.logger.info(f"  RR Ratio: {rr_ratio:.2f} | Profit: ${current_profit:.4f}")
                                     position['stop_loss'] = new_stop
-                                    send_telegram_message(f"🔄 ETH SHORT stop moved to 1:1 RR: ${old_stop:.4f} → ${new_stop:.4f} (RR: {rr_ratio:.2f})")
+                                    send_telegram_message(f"🔄 AVAX SHORT stop moved to 1:1 RR: ${old_stop:.4f} → ${new_stop:.4f} (RR: {rr_ratio:.2f})")
                 
                 # Wait 1 second before next check
                 await asyncio.sleep(0.5)
@@ -573,12 +498,12 @@ class ETHLiveTradingBot:
                 self.logger.error(f"Error in continuous stop monitoring: {e}")
                 await asyncio.sleep(0.5)
         
-        self.logger.info("🔍 Continuous stop monitoring stopped for ETH")
+        self.logger.info("🔍 Continuous stop monitoring stopped for AVAX")
     
     async def run_live_trading(self):
         """Main live trading loop"""
-        self.logger.info("🚀 Starting ETH Live Trading Bot...")
-        self.logger.info(f"Trading symbol: ETH")
+        self.logger.info("🚀 Starting AVAX Live Trading Bot...")
+        self.logger.info(f"Trading symbol: AVAX")
         self.logger.info(f"Risk per trade: $1")  # FIXED: Show $10 risk
         
         candle_idx = 0  # Track candle index for cooldown
@@ -595,44 +520,6 @@ class ETHLiveTradingBot:
                         await asyncio.sleep(0.5)
                         continue
                     
-                    # Check if we have a pending order - monitor and cancel after 7 minutes
-                    if self.pending_order:
-                        # Check if order has been pending for more than 7 minutes
-                        order_placement_time = self.last_order_time
-                        if order_placement_time:
-                            time_since_order = datetime.now() - order_placement_time
-                            if time_since_order.total_seconds() > 420:  # 7 minutes = 420 seconds
-                                self.logger.info(f"⏰ Order pending for 7+ minutes, cancelling...")
-                                send_telegram_message(f"⏰ ETH order pending for 7+ minutes, cancelling...")
-                                
-                                try:
-                                    self.client.cancel_order("ETH", self.pending_order['order_id'])
-                                    self.logger.info(f"✅ Order cancelled successfully")
-                                    send_telegram_message(f"✅ ETH order cancelled successfully")
-                                except Exception as e:
-                                    self.logger.error(f"❌ Failed to cancel order: {e}")
-                                    send_telegram_message(f"❌ Failed to cancel ETH order: {e}")
-                                
-                                self.pending_order = None
-                                continue
-                            else:
-                                remaining_time = 420 - time_since_order.total_seconds()
-                                self.logger.info(f"⏳ Pending order exists, {remaining_time:.0f}s remaining before cancellation")
-                        
-                        await asyncio.sleep(0.5)
-                        continue
-                    
-                    # Check 5-minute pause after placing orders
-                    pause_remaining = None
-                    if self.last_order_time:
-                        time_since_order = datetime.now() - self.last_order_time
-                        pause_remaining = 300 - time_since_order.total_seconds()  # 5 minutes = 300 seconds
-                    
-                    if pause_remaining and pause_remaining > 0:
-                        self.logger.info(f"⏳ ORDER PAUSE ACTIVE for ETH: {pause_remaining:.0f} seconds remaining")
-                        await asyncio.sleep(0.5)
-                        continue
-                    
                     # Check cooldown period (5 minutes instead of 1 minute)
                     cooldown_remaining = None
                     if self.last_position_close_time:
@@ -640,12 +527,12 @@ class ETHLiveTradingBot:
                         cooldown_remaining = 300 - time_since_close.total_seconds()  # 5 minutes = 300 seconds
                     
                     if cooldown_remaining and cooldown_remaining > 0:
-                        self.logger.info(f"⏳ COOLDOWN ACTIVE for ETH: {cooldown_remaining:.0f} seconds remaining")
+                        self.logger.info(f"⏳ COOLDOWN ACTIVE for AVAX: {cooldown_remaining:.0f} seconds remaining")
                         candle_idx += 1
                         await asyncio.sleep(0.5)
                         continue
                     
-                    # Fetch live data for ETH
+                    # Fetch live data for AVAX
                     ltf_data, htf_data, current_price = await self.fetch_live_data()
                     if ltf_data is not None and current_price is not None:
                         # Get current candle info for stop loss checks
@@ -656,7 +543,7 @@ class ETHLiveTradingBot:
                         # Only check for trailing stop updates in the main loop
                         if self.current_position is not None:
                             old_stop_loss = self.current_position['stop_loss']
-                            self.logger.info(f"🔄 TRAILING STOP CHECK: ETH {self.current_position['direction'].upper()}")
+                            self.logger.info(f"🔄 TRAILING STOP CHECK: AVAX {self.current_position['direction'].upper()}")
                             self.logger.info(f"  Current Stop: ${old_stop_loss:.4f} | Entry: ${self.current_position['entry_price']:.4f}")
                             
                             # Calculate current R:R to see if trailing is enabled
@@ -683,7 +570,7 @@ class ETHLiveTradingBot:
                             if (self.current_position['direction'] == 'long' and self.current_position['stop_loss'] > old_stop_loss) or \
                                (self.current_position['direction'] == 'short' and self.current_position['stop_loss'] < old_stop_loss):
                                 new_stop = self.current_position['stop_loss']
-                                self.logger.info(f"🔄 TRAILING STOP UPDATED for ETH {self.current_position['direction'].upper()}")
+                                self.logger.info(f"🔄 TRAILING STOP UPDATED for AVAX {self.current_position['direction'].upper()}")
                                 self.logger.info(f"  Old Stop: ${old_stop_loss:.4f} → New Stop: ${new_stop:.4f}")
                                 self.logger.info(f"  Entry: ${self.current_position['entry_price']:.4f} | Current Price: ${current_price:.4f}")
                                 
@@ -697,41 +584,26 @@ class ETHLiveTradingBot:
                                 rr_ratio = pnl / risk if risk > 0 else 0
                                 
                                 self.logger.info(f"  P&L: ${pnl:.4f} | R:R: {rr_ratio:.2f}")
-                                
-                                # Place limit order at new trailing stop level
-                                try:
-                                    stop_order = self.exchange.order(
-                                        name="ETH",
-                                        is_buy=not (self.current_position['direction'] == 'long'),  # Opposite of entry direction
-                                        sz=self.current_position['size'],
-                                        limit_px=new_stop,
-                                        order_type={"limit": {"tif": "Gtc"}},
-                                        reduce_only=True
-                                    )
-                                    self.logger.info(f"📉 Placed trailing stop limit order at: ${new_stop:.4f}")
-                                except Exception as e:
-                                    self.logger.error(f"Failed to place trailing stop order: {e}")
-                                
-                                send_telegram_message(f"🔄 TRAILING STOP UPDATED: ETH {self.current_position['direction'].upper()} ${old_stop_loss:.4f} → ${new_stop:.4f} (R:R: {rr_ratio:.2f})")
+                                send_telegram_message(f"🔄 TRAILING STOP UPDATED: AVAX {self.current_position['direction'].upper()} ${old_stop_loss:.4f} → ${new_stop:.4f} (R:R: {rr_ratio:.2f})")
                             elif updated:
-                                self.logger.debug(f"🔄 Trailing stop check completed - no update needed for ETH")
+                                self.logger.debug(f"🔄 Trailing stop check completed - no update needed for AVAX")
                             else:
-                                self.logger.debug(f"🔄 Trailing stop check completed - no valid swing levels found for ETH")
+                                self.logger.debug(f"🔄 Trailing stop check completed - no valid swing levels found for AVAX")
                         
                         # Check for new entry if no position
                         if self.current_position is None:
                             setup = self.strategy.check_entry_conditions(ltf_data, htf_data)
                             if setup:
-                                setup['symbol'] = 'ETH'  # Add symbol to setup
+                                setup['symbol'] = 'AVAX'  # Add symbol to setup
                                 # Only log locally, don't send Telegram for setups
-                                self.logger.info(f"✅ Setup found for ETH: {setup['direction']} at ${setup['entry_price']:.2f}")
-                                success = await self.open_live_position(setup, current_price)
+                                self.logger.info(f"✅ Setup found for AVAX: {setup['direction']} at ${setup['entry_price']:.2f}")
+                                success = self.open_live_position(setup, current_price)
                                 if not success:
-                                    self.logger.error(f"❌ FAILED to open position for ETH")
+                                    self.logger.error(f"❌ FAILED to open position for AVAX")
                                 else:
-                                    self.logger.info(f"✅ SUCCESSFULLY opened position for ETH")
+                                    self.logger.info(f"✅ SUCCESSFULLY opened position for AVAX")
                         else:
-                            self.logger.info(f"📊 ETH already has position: {self.current_position['direction']} at ${self.current_position['entry_price']:.2f}")
+                            self.logger.info(f"📊 AVAX already has position: {self.current_position['direction']} at ${self.current_position['entry_price']:.2f}")
                     
                     candle_idx += 1
                     await asyncio.sleep(10)
@@ -739,22 +611,22 @@ class ETHLiveTradingBot:
                     self.logger.error(f"Error in live trading cycle: {e}")
                     await asyncio.sleep(0.5)
         except KeyboardInterrupt:
-            self.logger.info("🛑 ETH live trading stopped by user (Ctrl+C)")
+            self.logger.info("🛑 AVAX live trading stopped by user (Ctrl+C)")
         
         if self.current_position is not None:
-            current_price = self.client.get_current_price("ETH")
+            current_price = self.client.get_current_price("AVAX")
             if current_price:
                 await self.close_live_position("Session End")
         
         self.client.close()
 
 async def main():
-    bot = ETHLiveTradingBot()
+    bot = AVAXLiveTradingBot()
     await bot.run_live_trading()
 
 if __name__ == "__main__":
-    print("🚀 ETH Live Trading Bot - REAL MONEY")
-    print("This bot trades ETH with real money on Hyperliquid.")
+    print("🚀 AVAX Live Trading Bot - REAL MONEY")
+    print("This bot trades AVAX with real money on Hyperliquid.")
     print("Risk per trade: $1")
     print("Bot will run INDEFINITELY until you press Ctrl+C")
     print("Make sure you have set up your Hyperliquid API key and have sufficient balance.")
