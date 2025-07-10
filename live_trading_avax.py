@@ -1,5 +1,8 @@
 import asyncio
 import pandas as pd
+import json
+import os
+import time
 from datetime import datetime, timedelta
 import logging
 from trading_strategy import FVGStrategy
@@ -12,7 +15,7 @@ class AVAXLiveTradingBot:
         self.config = {
             'HYPERLIQUID_API_KEY': HYPERLIQUID_API_KEY,
             'HYPERLIQUID_SUBACCOUNT': HYPERLIQUID_SUBACCOUNT,
-            'SYMBOLS': ["AVAX"],  # Only AVAX
+            'SYMBOLS': ["AVAX"],  
             'TIMEFRAME': TIMEFRAME,
             'HTF_TIMEFRAME': HTF_TIMEFRAME,
             'POSITION_SIZE': POSITION_SIZE,
@@ -24,19 +27,29 @@ class AVAXLiveTradingBot:
             'MAX_LEVERAGE': MAX_LEVERAGE
         }
         
-        # Initialize the correct Hyperliquid SDK clients
+        # Setup logging FIRST (before any API calls)
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
+        self.logger = logging.getLogger(__name__)
+        
+        # Initialize the correct Hyperliquid SDK clients - BUT DON'T MAKE API CALLS YET
         from hyperliquid.info import Info
         from hyperliquid.exchange import Exchange
         from hyperliquid.utils import constants
         from eth_account import Account
         
         self.wallet = Account.from_key(HYPERLIQUID_API_KEY)
-        self.info = Info(constants.MAINNET_API_URL, skip_ws=True)
-        self.exchange = Exchange(
-            wallet=self.wallet,
-            base_url=constants.MAINNET_API_URL,
-            account_address=HYPERLIQUID_ACCOUNT_ADDRESS
-        )
+        
+        # Store the classes but don't instantiate yet to avoid API calls
+        self.Info = Info
+        self.Exchange = Exchange
+        self.constants = constants
+        
+        # These will be initialized only when needed (for placing orders)
+        self.info = None
+        self.exchange = None
         
         self.strategy = FVGStrategy(self.config, send_notifications=False)
         
@@ -54,18 +67,65 @@ class AVAXLiveTradingBot:
         self.stop_monitoring_task = None
         self.stop_monitoring_active = False
         
-        # Setup logging
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s'
-        )
-        self.logger = logging.getLogger(__name__)
-        
         # Initialize client for data fetching
         self.client = HyperliquidClient(
             api_key=self.config['HYPERLIQUID_API_KEY'],
             subaccount=self.config['HYPERLIQUID_SUBACCOUNT']
         )
+        
+        # Elixir monitor integration
+        self.elixir_comm_file = "order_updates.json"
+        self.last_order_update_time = None
+        
+        # Check if Elixir monitor is running and has data
+        self.check_elixir_monitor_status()
+    
+    def check_elixir_monitor_status(self):
+        """Check if Elixir monitor is running and has recent data"""
+        try:
+            if os.path.exists(self.elixir_comm_file):
+                with open(self.elixir_comm_file, 'r') as f:
+                    content = f.read().strip()
+                    if content:
+                        updates = json.loads(content)
+                        if updates and len(updates) > 0:
+                            latest_update = updates[-1]
+                            update_time = latest_update.get('timestamp')
+                            if update_time:
+                                self.logger.info(f"✅ Elixir monitor data found: {len(updates)} updates")
+                                self.logger.info(f"   Latest update: {update_time}")
+                                return True
+            
+            self.logger.warning(f"⚠️ No Elixir monitor data found. Make sure to start the Elixir monitor when needed.")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Error checking Elixir monitor status: {e}")
+            return False
+    
+    def initialize_api_clients(self):
+        """Initialize API clients only when needed (for placing orders)"""
+        if self.info is None or self.exchange is None:
+            self.logger.info("🔧 Initializing Hyperliquid API clients...")
+            
+            # Retry logic for API initialization to handle rate limiting
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    self.info = self.Info(self.constants.MAINNET_API_URL, skip_ws=True)
+                    self.exchange = self.Exchange(
+                        wallet=self.wallet,
+                        base_url=self.constants.MAINNET_API_URL,
+                        account_address=HYPERLIQUID_ACCOUNT_ADDRESS
+                    )
+                    self.logger.info("✅ API clients initialized successfully")
+                    break  # Success, exit retry loop
+                except Exception as e:
+                    if "rate limited" in str(e) and attempt < max_retries - 1:
+                        self.logger.warning(f"Rate limited on attempt {attempt + 1}, waiting 5 seconds...")
+                        time.sleep(5)
+                    else:
+                        raise e  # Re-raise if not rate limited or max retries reached
     
     async def fetch_live_data(self):
         """Fetch live market data for AVAX"""
@@ -190,10 +250,332 @@ class AVAXLiveTradingBot:
     def round_to_tick(self, price, tick_size=0.001):
         return round(round(price / tick_size) * tick_size, 3)
 
+    def read_elixir_order_updates(self):
+        """Read order updates from Elixir monitor's JSON file"""
+        try:
+            if not os.path.exists(self.elixir_comm_file):
+                self.logger.debug(f"Elixir file not found: {self.elixir_comm_file}")
+                return None
+            
+            with open(self.elixir_comm_file, 'r') as f:
+                content = f.read().strip()
+                if not content:
+                    self.logger.debug(f"Elixir file is empty")
+                    return None
+                
+                # Parse the JSON content (expecting a combined state object)
+                state_data = json.loads(content)
+                
+                # Check if this is a new update
+                update_time = state_data.get('timestamp')
+                if update_time and self.last_order_update_time != update_time:
+                    self.logger.info(f"📨 NEW ELIXIR UPDATE DETECTED!")
+                    self.logger.info(f"   Previous time: {self.last_order_update_time}")
+                    self.logger.info(f"   New time: {update_time}")
+                    self.last_order_update_time = update_time
+                    return state_data
+                else:
+                    self.logger.debug(f"No new update - same timestamp: {update_time}")
+                
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"Error reading Elixir order updates: {e}")
+            return None
+
+    def process_elixir_update(self, state_data):
+        """Process state data from the Elixir monitor"""
+        try:
+            self.logger.info(f"🔍 PROCESSING ELIXIR STATE UPDATE")
+            self.logger.info(f"   Timestamp: {state_data.get('timestamp')}")
+            
+            # Check if we have a pending order
+            if not self.pending_order:
+                self.logger.debug(f"No pending order to check")
+                return False
+            
+            # Check fills for our pending order - only recent ones
+            fills = state_data.get('fills', [])
+            
+            # Ensure fills is a list, not a string
+            if isinstance(fills, str):
+                self.logger.warning(f"Fills is a string, not a list: {fills}")
+                fills = []
+            elif not isinstance(fills, list):
+                self.logger.warning(f"Fills is not a list: {type(fills)}")
+                fills = []
+                
+            if fills and self.pending_order:
+                # Only check fills that are newer than when our pending order was placed
+                order_time = self.pending_order.get('order_time')
+                if order_time:
+                    # Filter fills to only those newer than our order
+                    # Convert order_time to milliseconds timestamp for comparison
+                    order_timestamp_ms = int(order_time.timestamp() * 1000)
+                    recent_fills = []
+                    for fill in fills:
+                        fill_time = fill.get('time')  # This is milliseconds timestamp
+                        if fill_time and isinstance(fill_time, (int, float)) and fill_time > order_timestamp_ms:
+                            recent_fills.append(fill)
+                    
+                    self.logger.info(f"🔍 Checking {len(recent_fills)} recent fills (newer than order)")
+                    
+                    for fill in recent_fills:
+                        # Check if this fill matches our pending order
+                        fill_oid = fill.get('oid')
+                        fill_coin = fill.get('coin')
+                        
+                        if fill_coin == 'AVAX' and fill_oid:
+                            # Check if this fill matches our pending order by either order ID
+                            pending_regular_id = self.pending_order.get('regular_order_id')
+                            pending_client_id = self.pending_order.get('order_id')  # This is the client order ID
+                            
+                            # Convert to same type for comparison
+                            if isinstance(fill_oid, str):
+                                fill_oid_int = int(fill_oid) if fill_oid.isdigit() else fill_oid
+                            else:
+                                fill_oid_int = fill_oid
+                            
+                            if isinstance(pending_regular_id, str):
+                                pending_regular_id_int = int(pending_regular_id) if pending_regular_id.isdigit() else pending_regular_id
+                            else:
+                                pending_regular_id_int = pending_regular_id
+                            
+                            # Check if this fill matches our order
+                            if (pending_regular_id_int == fill_oid_int or 
+                                pending_client_id == fill_oid_int):
+                                self.logger.info(f"🔍 POTENTIAL MATCH: AVAX fill OID {fill_oid}")
+                                self.logger.info(f"   Pending Regular ID: {pending_regular_id_int}")
+                                self.logger.info(f"   Pending Client ID: {pending_client_id}")
+                                self.logger.info(f"   Fill OID: {fill_oid_int}")
+                                
+                                # This is our order - process it
+                                self.logger.info(f"✅ ORDER FILLED via Elixir monitor!")
+                                
+                                # Create position from fill data
+                                fill_price = float(fill.get('px', self.pending_order['limit_price']))
+                                fill_size = float(fill.get('sz', self.pending_order['size']))
+                                
+                                self.current_position = {
+                                    'direction': self.pending_order['direction'],
+                                    'entry_price': fill_price,
+                                    'stop_loss': self.pending_order['stop_loss'],
+                                    'take_profit': self.pending_order['setup'].get('take_profit'),
+                                    'size': fill_size,
+                                    'entry_time': datetime.now(),
+                                    'reason': f"Momentum FVG - {self.pending_order['setup']['reason']}",
+                                    'leverage': self.pending_order['leverage'],
+                                    'order_id': self.pending_order['order_id'],
+                                    'strategy_type': 'momentum',
+                                    'fvg': self.pending_order.get('fvg', {})
+                                }
+                                
+                                # Send Telegram notification
+                                send_telegram_message(
+                                    f"✅ MOMENTUM ALO FILLED: AVAX {self.pending_order['direction'].upper()} at ${fill_price:.4f} | "
+                                    f"FVG Stop: ${self.current_position['stop_loss']:.4f} | Size: {fill_size:.4f}"
+                                )
+                                
+                                # Start stop monitoring
+                                self.start_stop_monitoring()
+                                
+                                # Clear pending order
+                                self.pending_order = None
+                                return True
+                else:
+                    # Fallback: check all fills if we don't have order time
+                    self.logger.info(f"🔍 Checking {len(fills)} fills (no order time available)")
+                    
+                    for fill in fills:
+                        fill_oid = fill.get('oid')
+                        fill_coin = fill.get('coin')
+                        
+                        if fill_coin == 'AVAX' and fill_oid:
+                            # Check if this fill matches our pending order by either order ID
+                            pending_regular_id = self.pending_order.get('regular_order_id')
+                            pending_client_id = self.pending_order.get('order_id')  # This is the client order ID
+                            
+                            # Convert to same type for comparison
+                            if isinstance(fill_oid, str):
+                                fill_oid_int = int(fill_oid) if fill_oid.isdigit() else fill_oid
+                            else:
+                                fill_oid_int = fill_oid
+                            
+                            if isinstance(pending_regular_id, str):
+                                pending_regular_id_int = int(pending_regular_id) if pending_regular_id.isdigit() else pending_regular_id
+                            else:
+                                pending_regular_id_int = pending_regular_id
+                            
+                            # Check if this fill matches our order
+                            if (pending_regular_id_int == fill_oid_int or 
+                                pending_client_id == fill_oid_int):
+                                self.logger.info(f"🔍 POTENTIAL MATCH: AVAX fill OID {fill_oid}")
+                                self.logger.info(f"   Pending Regular ID: {pending_regular_id_int}")
+                                self.logger.info(f"   Pending Client ID: {pending_client_id}")
+                                self.logger.info(f"   Fill OID: {fill_oid_int}")
+                                
+                                # This is our order - process it
+                                self.logger.info(f"✅ ORDER FILLED via Elixir monitor!")
+                                
+                                # Create position from fill data
+                                fill_price = float(fill.get('px', self.pending_order['limit_price']))
+                                fill_size = float(fill.get('sz', self.pending_order['size']))
+                                
+                                self.current_position = {
+                                    'direction': self.pending_order['direction'],
+                                    'entry_price': fill_price,
+                                    'stop_loss': self.pending_order['stop_loss'],
+                                    'take_profit': self.pending_order['setup'].get('take_profit'),
+                                    'size': fill_size,
+                                    'entry_time': datetime.now(),
+                                    'reason': f"Momentum FVG - {self.pending_order['setup']['reason']}",
+                                    'leverage': self.pending_order['leverage'],
+                                    'order_id': self.pending_order['order_id'],
+                                    'strategy_type': 'momentum',
+                                    'fvg': self.pending_order.get('fvg', {})
+                                }
+                                
+                                # Send Telegram notification
+                                send_telegram_message(
+                                    f"✅ MOMENTUM ALO FILLED: AVAX {self.pending_order['direction'].upper()} at ${fill_price:.4f} | "
+                                    f"FVG Stop: ${self.current_position['stop_loss']:.4f} | Size: {fill_size:.4f}"
+                                )
+                                
+                                # Start stop monitoring
+                                self.start_stop_monitoring()
+                                
+                                # Clear pending order
+                                self.pending_order = None
+                                return True
+            
+            # Check positions for our pending order - only if we have a pending order
+            positions = state_data.get('positions', [])
+            
+            # Ensure positions is a list, not a string
+            if isinstance(positions, str):
+                self.logger.warning(f"Positions is a string, not a list: {positions}")
+                positions = []
+            elif not isinstance(positions, list):
+                self.logger.warning(f"Positions is not a list: {type(positions)}")
+                positions = []
+                
+            if positions and self.pending_order:
+                # Only check AVAX positions
+                avax_positions = [pos for pos in positions if pos.get('coin') == 'AVAX']
+                if avax_positions:
+                    self.logger.info(f"🔍 Checking {len(avax_positions)} AVAX positions for our pending order")
+                    
+                    for position in avax_positions:
+                        position_size = float(position.get('size', 0))
+                        
+                        if position_size != 0:
+                            self.logger.info(f"🔍 Found AVAX position: size {position_size}")
+                            
+                            # If we have a pending order and find a position, assume it was filled
+                            self.logger.info(f"✅ POSITION CREATED via Elixir monitor!")
+                            
+                            # Create position from position data
+                            entry_price = float(position.get('entry_price', self.pending_order['limit_price']))
+                            
+                            self.current_position = {
+                                'direction': self.pending_order['direction'],
+                                'entry_price': entry_price,
+                                'stop_loss': self.pending_order['stop_loss'],
+                                'take_profit': self.pending_order['setup'].get('take_profit'),
+                                'size': abs(position_size),
+                                'entry_time': datetime.now(),
+                                'reason': f"Momentum FVG - {self.pending_order['setup']['reason']}",
+                                'leverage': self.pending_order['leverage'],
+                                'order_id': self.pending_order['order_id'],
+                                'strategy_type': 'momentum',
+                                'fvg': self.pending_order.get('fvg', {})
+                            }
+                            
+                            # Send Telegram notification
+                            send_telegram_message(
+                                f"✅ MOMENTUM ALO FILLED: AVAX {self.pending_order['direction'].upper()} at ${entry_price:.4f} | "
+                                f"FVG Stop: ${self.current_position['stop_loss']:.4f} | Size: {abs(position_size):.4f}"
+                            )
+                            
+                            # Start stop monitoring
+                            self.start_stop_monitoring()
+                            
+                            # Clear pending order
+                            self.pending_order = None
+                            return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Error processing Elixir update: {e}")
+            return False
+
+    def clear_order_updates_file(self):
+        """Clear the order updates file after closing a position"""
+        try:
+            if os.path.exists(self.elixir_comm_file):
+                # Clear the file by writing an empty array
+                with open(self.elixir_comm_file, 'w') as f:
+                    json.dump([], f)
+                self.logger.info(f"🧹 Cleared order updates file: {self.elixir_comm_file}")
+                # Reset the last update time
+                self.last_order_update_time = None
+        except Exception as e:
+            self.logger.error(f"Error clearing order updates file: {e}")
+
+    def add_order_to_elixir_monitor(self, order_result, setup, stop_loss):
+        """Add order to Elixir monitor for tracking"""
+        try:
+            # Create order data for Elixir monitor
+            order_data = {
+                'symbol': 'AVAX',
+                'direction': setup['direction'],
+                'size': order_result.get('fill_size', order_result.get('size')),
+                'limit_price': setup['entry_price'],
+                'stop_loss': stop_loss,
+                'order_type': 'INVERTED_ALO',
+                'strategy_type': 'momentum',
+                'setup': setup
+            }
+            
+            # Write to a file that the Elixir monitor can read
+            elixir_order_file = "pending_orders.json"
+            
+            # Read existing orders
+            existing_orders = []
+            if os.path.exists(elixir_order_file):
+                try:
+                    with open(elixir_order_file, 'r') as f:
+                        existing_orders = json.loads(f.read())
+                except:
+                    existing_orders = []
+            
+            # Add new order
+            new_order = {
+                'client_order_id': order_result.get('cloid'),
+                'order_id': order_result.get('order_id'),
+                'timestamp': datetime.now().isoformat(),
+                'data': order_data
+            }
+            
+            existing_orders.append(new_order)
+            
+            # Write back to file
+            with open(elixir_order_file, 'w') as f:
+                json.dump(existing_orders, f, indent=2)
+            
+            self.logger.info(f"📋 Added order to Elixir monitor: {order_result.get('cloid')}")
+            
+        except Exception as e:
+            self.logger.error(f"Error adding order to Elixir monitor: {e}")
+
     # Add these new methods for ALO limit orders
     async def place_limit_order(self, symbol, is_buy, size, limit_price, order_type="Alo"):
         """Place a limit order using the official SDK"""
         try:
+            # Initialize API clients if needed
+            self.initialize_api_clients()
+            
             self.logger.info(f"📋 Placing LIMIT ORDER: {symbol} {'BUY' if is_buy else 'SELL'} {size} @ ${limit_price:.4f}")
             
             # Generate a unique client order ID (128 bit hex string)
@@ -285,6 +667,9 @@ class AVAXLiveTradingBot:
     async def check_order_status(self, symbol, order_id, cloid=None):
         """Check order status using the official SDK - following the correct pattern"""
         try:
+            # Initialize API clients if needed
+            self.initialize_api_clients()
+            
             self.logger.info(f"🔍 Checking order status:")
             self.logger.info(f"  Order ID: {order_id}")
             if cloid:
@@ -385,8 +770,11 @@ class AVAXLiveTradingBot:
             return {'status': 'error', 'error': str(e)}
 
     async def check_order_status_by_cloid(self, symbol, cloid):
-        """Check order status using client order ID - using official SDK pattern"""
+        """Check order status using client order ID - simplified approach without open_orders"""
         try:
+            # Initialize API clients if needed
+            self.initialize_api_clients()
+            
             self.logger.info(f"🔍 Checking order status by Client Order ID: {cloid}")
             
             # First check if we have a position (order was filled)
@@ -406,108 +794,63 @@ class AVAXLiveTradingBot:
                                 'position_data': pos_data
                             }
             
-            # Use the official SDK pattern to query order status
-            # Get all open orders first to find our cloid and get the oid
-            try:
-                open_orders = self.exchange.open_orders()
-                for order in open_orders:
-                    order_cloid = order.get('cloid', '')
-                    if order_cloid == cloid:
-                        # Found our order - get the oid and query its status
-                        oid = order.get('oid')
-                        if oid:
-                            self.logger.info(f"🔍 Found our cloid in open orders, querying by oid: {oid}")
-                            
-                            # Use the official SDK pattern you mentioned
-                            order_status = self.info.query_order_by_oid(self.wallet.address, oid)
-                            self.logger.info(f"🔍 Order status by oid: {order_status}")
-                            
-                            if order_status and order_status.get('status') != 'unknownOid':
-                                # Order exists - check if it's filled or still resting
-                                if 'filled' in order_status:
-                                    self.logger.info(f"✅ CLIENT ORDER FILLED (via oid query)!")
-                                    return {
-                                        'status': 'filled_via_oid_query',
-                                        'cloid': cloid,
-                                        'oid': oid,
-                                        'order_data': order_status
-                                    }
-                                else:
-                                    self.logger.info(f"⏳ CLIENT ORDER STILL RESTING (via oid query)")
-                                    return {
-                                        'status': 'resting',
-                                        'cloid': cloid,
-                                        'oid': oid,
-                                        'order_data': order_status
-                                    }
-                            else:
-                                # Order not found via oid query - might be filled
-                                self.logger.info(f"⚠️ Order not found via oid query - might be filled")
-                                return {
-                                    'status': 'filled_via_oid_disappearance',
-                                    'cloid': cloid,
-                                    'oid': oid,
-                                    'message': 'Order not found via oid query - was filled'
-                                }
-                        else:
-                            self.logger.warning(f"⚠️ Found cloid but no oid in order: {order}")
-                            return {
-                                'status': 'resting',
-                                'cloid': cloid,
-                                'order_data': order,
-                                'message': 'Client order found in open orders (no oid)'
-                            }
-                
-                # Our cloid not found in open orders - it was filled
-                self.logger.info(f"✅ CLIENT ORDER FILLED (not found in open orders)")
-                return {
-                    'status': 'filled_via_disappearance',
-                    'cloid': cloid,
-                    'message': 'Client order not found in open orders - was filled'
-                }
-                
-            except Exception as e:
-                self.logger.error(f"❌ Error checking open orders: {e}")
-                return {'status': 'error', 'error': str(e)}
+            # Since we can't use open_orders(), we'll assume the order is still resting
+            # if we don't find a position. This is a reasonable assumption for ALO orders.
+            self.logger.info(f"⏳ CLIENT ORDER STILL RESTING (no position found)")
+            return {
+                'status': 'resting',
+                'cloid': cloid,
+                'message': 'Order assumed to be resting (no position found)'
+            }
             
         except Exception as e:
             self.logger.error(f"❌ Error checking order status by cloid: {e}")
             return {'status': 'error', 'error': str(e)}
 
     async def check_order_status_via_open_orders(self, symbol, order_id):
-        """Check order status by looking through open orders"""
+        """Check order status by looking through open orders - simplified approach"""
         try:
+            # Initialize API clients if needed
+            self.initialize_api_clients()
+            
             self.logger.info(f"🔍 Checking order {order_id} via open orders...")
             
-            # Get all open orders
-            open_orders = self.exchange.open_orders()
-            self.logger.info(f"📋 Found {len(open_orders)} open orders")
+            # Since open_orders() doesn't exist in the SDK, we'll use a simplified approach
+            # Check if we have a position (order was filled)
+            user_state = self.info.user_state(self.wallet.address)
             
-            # Look for our specific order
-            for order in open_orders:
-                if order.get('oid') == order_id:
-                    self.logger.info(f"✅ FOUND ORDER: {order}")
-                    return {
-                        'status': 'found',
-                        'order_id': order_id,
-                        'order_data': order
-                    }
+            if "assetPositions" in user_state:
+                for position in user_state["assetPositions"]:
+                    pos_data = position["position"]
+                    if pos_data.get("coin") == symbol:
+                        size = float(pos_data.get("szi", 0))
+                        if size != 0:
+                            # We have a position - order was filled
+                            self.logger.info(f"✅ ORDER FILLED (found position)!")
+                            return {
+                                'status': 'filled_via_position',
+                                'order_id': order_id,
+                                'position_data': pos_data
+                            }
             
-            # Order not found in open orders
-            self.logger.warning(f"⚠️ Order {order_id} not found in open orders")
+            # If no position found, assume order is still resting
+            self.logger.info(f"⏳ ORDER STILL RESTING (no position found)")
             return {
-                'status': 'not_found',
+                'status': 'resting',
                 'order_id': order_id,
-                'message': 'Order not found in open orders'
+                'message': 'Order assumed to be resting (no position found)'
             }
             
         except Exception as e:
-            self.logger.error(f"❌ Error checking open orders: {e}")
+            self.logger.error(f"❌ Error checking order status: {e}")
             return {'status': 'error', 'error': str(e)}
 
     async def cancel_order(self, symbol, order_id):
         """Cancel order using the official SDK - simplified version"""
         try:
+            # Initialize API clients if needed
+            self.initialize_api_clients()
+            
             self.logger.info(f"❌ Cancelling order: {symbol} - ID: {order_id}")
             
             # Try converting order_id to int if it's a string
@@ -565,20 +908,31 @@ class AVAXLiveTradingBot:
             try:
                 check_count += 1
                 
-                # Check order status CONSTANTLY using client order ID
-                # FIXED: Check for both 'ALO' and 'INVERTED_ALO' order types
+                # First check Elixir monitor updates (real-time)
+                elixir_update = self.read_elixir_order_updates()
+                if elixir_update:
+                    self.logger.info(f"📨 Elixir update received: {elixir_update.get('type', 'unknown')}")
+                    # Process Elixir update if it matches our pending order
+                    if self.process_elixir_update(elixir_update):
+                        return  # Order was filled via Elixir update
+                
+                # Log progress every 120 checks (every 60 seconds) - reduced frequency
+                if check_count % 120 == 0:
+                    elapsed = (datetime.now() - start_time).total_seconds()
+                    remaining = timeout_seconds - elapsed
+                    # Only log if needed for Elixir or error
+                    pass  # No regular progress log
+
+                # Fallback to direct API checking
                 if self.pending_order['order_type'] in ['ALO', 'INVERTED_ALO']:
                     cloid = self.pending_order['order_id'] # Use the client order ID for ALO
-                    self.logger.info(f"🔍 Using Client Order ID for monitoring: {cloid}")
                     status = await self.check_order_status_by_cloid(symbol, cloid)
                 else: # For other order types, use the original order_id
-                    self.logger.info(f"🔍 Using regular Order ID for monitoring: {order_id}")
                     status = await self.check_order_status(symbol, order_id)
-                
+
                 if status['status'] in ['found', 'resting_via_query']:
                     # Order still exists and is resting
                     order_data = status['order_data']
-                    self.logger.info(f"⏳ ORDER STILL RESTING: {status['status']}")
                     # Continue monitoring...
                     
                 elif status['status'] in ['filled_via_query', 'filled_via_position', 'filled_via_disappearance', 'filled_via_oid_query', 'filled_via_oid_disappearance']:
@@ -624,13 +978,19 @@ class AVAXLiveTradingBot:
                     # START STOP MONITORING IMMEDIATELY
                     self.start_stop_monitoring()
                     
+                    # Place initial ALO stop order immediately
+                    asyncio.create_task(self.place_alo_stop_order(
+                        self.current_position['stop_loss'],
+                        self.current_position['size']
+                    ))
+                    
                     # Clear pending order
                     self.pending_order = None
                     return
                         
                 elif status['status'] == 'filled_via_position':
                     # Order not found but we have a position - order was filled
-                    self.logger.info(f"✅ ALO ORDER FILLED (detected via position)! Starting stop monitoring IMMEDIATELY")
+                    self.logger.info(f"✅ ALO ORDER FILLED (detected via position)!")
                     
                     pos_data = status['position_data']
                     size = float(pos_data.get("szi", 0))
@@ -666,7 +1026,7 @@ class AVAXLiveTradingBot:
                 
                 elif status['status'] == 'filled_via_history':
                     # Order found in fill history
-                    self.logger.info(f"✅ ALO ORDER FILLED (detected via history)! Starting stop monitoring IMMEDIATELY")
+                    self.logger.info(f"✅ ALO ORDER FILLED (detected via history)!")
                     
                     fill_data = status['fill_data']
                     
@@ -709,7 +1069,7 @@ class AVAXLiveTradingBot:
                                 size = float(pos_data.get("szi", 0))
                                 if size != 0:
                                     # We have a position - ALO order was filled
-                                    self.logger.info(f"✅ ALO ORDER FILLED (found in positions)! Starting stop monitoring IMMEDIATELY")
+                                    self.logger.info(f"✅ ALO ORDER FILLED (found in positions)!")
                                     
                                     self.current_position = {
                                         'direction': self.pending_order['direction'],
@@ -744,22 +1104,13 @@ class AVAXLiveTradingBot:
                     self.logger.warning(f"⚠️ Order {order_id} not found and no position - might be cancelled")
                     break
                 
-                # Log progress every 60 checks (every 30 seconds)
-                if check_count % 60 == 0:
+                # Log progress every 120 checks (every 60 seconds) - reduced frequency
+                if check_count % 120 == 0:
                     elapsed = (datetime.now() - start_time).total_seconds()
                     remaining = timeout_seconds - elapsed
-                    self.logger.info(f"🔍 ALO MONITOR #{check_count}: {elapsed:.0f}s elapsed, {remaining:.0f}s remaining")
-                    
-                    # Also get current price to show progress
-                    current_price = self.client.get_current_price(symbol)
-                    if current_price:
-                        if direction == 'long':
-                            distance = limit_price - current_price
-                            self.logger.info(f"  Current: ${current_price:.4f} | Need: ${limit_price:.4f} | Distance: ${distance:.4f}")
-                        else:  # short
-                            distance = current_price - limit_price
-                            self.logger.info(f"  Current: ${current_price:.4f} | Need: ${limit_price:.4f} | Distance: ${distance:.4f}")
-                
+                    # Only log if needed for Elixir or error
+                    pass  # No regular progress log
+
                 # Wait 0.5 seconds before next check
                 await asyncio.sleep(check_interval)
                 
@@ -834,18 +1185,18 @@ class AVAXLiveTradingBot:
             # For SHORT: Place limit order BELOW current price (follows momentum down)
             
             if is_buy:
-                # LONG: Place limit buy ABOVE current price to follow momentum
-                # Use FVG entry target as base, with 0.05 cent buffer for ALO
-                limit_price = setup['entry_price'] + 0.0005  # 0.05 cents ABOVE FVG entry
-                self.logger.info(f"📈 MOMENTUM LONG SETUP: Placing ALO limit buy ABOVE FVG entry")
-                self.logger.info(f"  FVG Entry Target: ${setup['entry_price']:.4f}")
-                self.logger.info(f"  ALO Limit Price: ${limit_price:.4f} (0.05 cents ABOVE FVG)")
-            else:
-                # SHORT: Place limit sell BELOW current price to follow momentum
-                # Use FVG entry target as base, with 0.05 cent buffer for ALO
+                # LONG: Place limit buy BELOW current price for ALO (subtract buffer)
+                # Use FVG entry target as base, with 0.05 cent buffer BELOW for ALO
                 limit_price = setup['entry_price'] - 0.0005  # 0.05 cents BELOW FVG entry
-                self.logger.info(f"📉 MOMENTUM SHORT SETUP: Placing ALO limit sell BELOW FVG entry")
+                self.logger.info(f"📈 MOMENTUM LONG SETUP: Placing ALO limit buy BELOW FVG entry")
+                self.logger.info(f"  FVG Entry Target: ${setup['entry_price']:.4f}")
                 self.logger.info(f"  ALO Limit Price: ${limit_price:.4f} (0.05 cents BELOW FVG)")
+            else:
+                # SHORT: Place limit sell ABOVE current price for ALO (add buffer)
+                # Use FVG entry target as base, with 0.05 cent buffer ABOVE for ALO
+                limit_price = setup['entry_price'] + 0.0005  # 0.05 cents ABOVE FVG entry
+                self.logger.info(f"📉 MOMENTUM SHORT SETUP: Placing ALO limit sell ABOVE FVG entry")
+                self.logger.info(f"  ALO Limit Price: ${limit_price:.4f} (0.05 cents ABOVE FVG)")
             
             # Round to 3 decimal places
             limit_price = round(limit_price, 3)
@@ -861,9 +1212,11 @@ class AVAXLiveTradingBot:
             self.logger.info(f"  Leverage: {leverage}x")
             self.logger.info(f"  Order Type: INVERTED ALO (Momentum Following)")
             
-            # Place INVERTED ALO limit order
             order_result = await self.place_limit_order("AVAX", is_buy, position_size, limit_price, "Alo")
             
+            if order_result['status'] in ['filled', 'resting']:
+                self.add_order_to_elixir_monitor(order_result, setup, final_stop)
+                
             if order_result['status'] == 'filled':
                 # Order was filled immediately (more likely with momentum approach)
                 self.current_position = {
@@ -946,14 +1299,13 @@ class AVAXLiveTradingBot:
             return False
     
     def close_live_position(self, reason="manual"):
-        """Close the current live position on Hyperliquid"""
+        """Close the current live position on Hyperliquid and cancel stop order."""
         if self.current_position is None:
             self.logger.warning("No position to close")
             return False
-        
         try:
+            self.initialize_api_clients()
             self.logger.info(f"📉 Closing live position for AVAX (INSTANT EXECUTION): {reason}")
-            
             # Use market_close for instant execution
             close_result = self.exchange.market_close(
                 coin="AVAX",
@@ -1018,6 +1370,9 @@ class AVAXLiveTradingBot:
                     # Clear position
                     self.current_position = None
                     self.last_position_close_time = datetime.now()
+                    
+                    # Clear order updates file after closing position
+                    self.clear_order_updates_file()
                     
                     return True
             else:
@@ -1109,7 +1464,7 @@ class AVAXLiveTradingBot:
                             ltf_data, _, _ = await self.fetch_live_data()
                             if ltf_data is not None:
                                 old_stop = position['stop_loss']
-                                updated = self.strategy.update_momentum_trailing_stop(ltf_data, position)
+                                updated = self.strategy.update_trailing_stop(ltf_data, position)
                                 if updated:
                                     new_stop = position['stop_loss']
                                     self.logger.info(f"🔄 MOMENTUM TRAILING UPDATED!")
@@ -1137,6 +1492,7 @@ class AVAXLiveTradingBot:
                     self.stop_monitoring_active = False
                     break
                 
+                # Remove market order logic on stop hit
                 # Wait 0.5 seconds before next check
                 await asyncio.sleep(0.5)
                 
@@ -1160,6 +1516,10 @@ class AVAXLiveTradingBot:
                 cycle_count += 1
                 
                 try:
+                    # DEBUG: Log every cycle for visibility
+                    if cycle_count % 20 == 0:  # Every 10 seconds (20 cycles * 0.5s)
+                        self.logger.info(f"🔄 TRADING CYCLE #{cycle_count} - Searching for AVAX setups...")
+                    
                     # Check if we're in a position OR have a pending order
                     if self.current_position is not None or self.pending_order is not None:
                         # Already in a position OR waiting for ALO order to fill
@@ -1182,6 +1542,16 @@ class AVAXLiveTradingBot:
                         candle_idx += 1
                         await asyncio.sleep(0.5)
                         continue
+                    
+                    # Only check Elixir monitor if we have a pending order
+                    if self.pending_order is not None:
+                        elixir_update = self.read_elixir_order_updates()
+                        if elixir_update:
+                            self.logger.info(f"📨 ELIXIR UPDATE DETECTED!")
+                            self.logger.info(f"   Timestamp: {elixir_update.get('timestamp', 'unknown')}")
+                            # Process Elixir update
+                            if self.process_elixir_update(elixir_update):
+                                self.logger.info(f"✅ ELIXIR UPDATE PROCESSED SUCCESSFULLY!")
                     
                     # MAIN LOOP: No position, no pending order, no cooldown - SEARCHING FOR TRADES
                     if cycle_count % 10 == 0:  # Log every 10 cycles when searching
@@ -1209,7 +1579,7 @@ class AVAXLiveTradingBot:
                                     self.logger.info(f"✅ SUCCESSFULLY opened position for AVAX")
                     
                     candle_idx += 1
-                    await asyncio.sleep(10)
+                    await asyncio.sleep(0.5)  # Changed from 10s to 0.5s for faster response
                     
                 except Exception as e:
                     self.logger.error(f"Error in live trading cycle: {e}")
@@ -1278,6 +1648,8 @@ class AVAXLiveTradingBot:
         except Exception as e:
             self.logger.error(f"Error checking for existing position: {e}")
             return False
+
+
 
 async def main():
     bot = AVAXLiveTradingBot()

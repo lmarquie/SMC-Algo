@@ -543,3 +543,91 @@ class FVGStrategy:
         print("Current stop:", position['stop_loss'])
         
         return updated 
+
+    def update_momentum_trailing_stop(self, df: pd.DataFrame, position: Dict) -> bool:
+        """Update trailing stop for momentum strategy - enables trailing immediately"""
+        if not position:
+            return False
+        
+        current_price = df['close'].iloc[-1]
+        
+        # For momentum strategy, enable trailing immediately (no R:R requirement)
+        if 'trailing_enabled' not in position:
+            position['trailing_enabled'] = True
+            position['original_stop_loss'] = position['stop_loss']
+            self.logger.info(f"✅ MOMENTUM TRAILING ENABLED immediately!")
+            if self.send_notifications:
+                send_telegram_message(f"✅ Momentum trailing enabled for {position.get('symbol', 'UNKNOWN')}")
+        
+        # Update trailing stop based on structure
+        df_analyzed = self.analyzer.analyze_structure(df)
+        last_stop_update_idx = position.get('last_stop_update_idx', None)
+        updated = False
+        
+        if position['direction'] == 'long':
+            # Find all swing lows since last stop update
+            recent_swings = df_analyzed.tail(30)  # Shorter lookback for momentum
+            swing_lows = recent_swings[recent_swings['swing_low'].notna()]
+            if last_stop_update_idx is not None:
+                swing_lows = swing_lows[swing_lows.index > last_stop_update_idx]
+            
+            if not swing_lows.empty:
+                # Find the HIGHEST swing low (most favorable for longs)
+                best_swing_low = swing_lows['swing_low'].max()
+                # Tighter stop distance for momentum
+                new_stop = best_swing_low - self.config.get('STOP_LOSS_BUFFER', 0.005)
+                # Only move stop up (more favorable) - NEVER move down for longs
+                if new_stop > position['stop_loss']:
+                    # Simpler confirmation for momentum - just check if price stayed above swing low
+                    swing_low_idx = swing_lows.index[-1]
+                    candles_after_swing = df_analyzed.loc[swing_low_idx:].tail(3)  # Check 3 candles after
+                    
+                    # Check if price stayed above the swing low
+                    price_stayed_above = all(candle['low'] > best_swing_low for _, candle in candles_after_swing.iterrows())
+                    
+                    if price_stayed_above:
+                        if position['stop_loss'] != new_stop:
+                            old_stop = position['stop_loss']
+                            position['stop_loss'] = new_stop
+                            position['last_stop_update_idx'] = swing_lows.index[-1]
+                            updated = True
+                            self.logger.info(f"🔄 MOMENTUM TRAILING: ${old_stop:.4f} → ${new_stop:.4f}")
+                            if self.send_notifications:
+                                send_telegram_message(
+                                    f"🔄 Momentum trailing: {position.get('symbol', 'UNKNOWN')} ${old_stop:.4f} → ${new_stop:.4f}"
+                                )
+        
+        else:  # short
+            # Find all swing highs since last stop update
+            recent_swings = df_analyzed.tail(30)  # Shorter lookback for momentum
+            swing_highs = recent_swings[recent_swings['swing_high'].notna()]
+            if last_stop_update_idx is not None:
+                swing_highs = swing_highs[swing_highs.index > last_stop_update_idx]
+            
+            if not swing_highs.empty:
+                # Find the LOWEST swing high (most favorable for shorts)
+                best_swing_high = swing_highs['swing_high'].min()
+                # Tighter stop distance for momentum
+                new_stop = best_swing_high + self.config.get('STOP_LOSS_BUFFER', 0.005)
+                # Only move stop down (more favorable) - NEVER move up for shorts
+                if new_stop < position['stop_loss']:
+                    # Simpler confirmation for momentum - just check if price stayed below swing high
+                    swing_high_idx = swing_highs.index[-1]
+                    candles_after_swing = df_analyzed.loc[swing_high_idx:].tail(3)  # Check 3 candles after
+                    
+                    # Check if price stayed below the swing high
+                    price_stayed_below = all(candle['high'] < best_swing_high for _, candle in candles_after_swing.iterrows())
+                    
+                    if price_stayed_below:
+                        if position['stop_loss'] != new_stop:
+                            old_stop = position['stop_loss']
+                            position['stop_loss'] = new_stop
+                            position['last_stop_update_idx'] = swing_highs.index[-1]
+                            updated = True
+                            self.logger.info(f"🔄 MOMENTUM TRAILING: ${old_stop:.4f} → ${new_stop:.4f}")
+                            if self.send_notifications:
+                                send_telegram_message(
+                                    f"🔄 Momentum trailing: {position.get('symbol', 'UNKNOWN')} ${old_stop:.4f} → ${new_stop:.4f}"
+                                )
+        
+        return updated 
