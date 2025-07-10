@@ -10,12 +10,12 @@ from hyperliquid_client import HyperliquidClient
 from config import *
 from notifications import send_telegram_message
 
-class AVAXLiveTradingBot:
+class BTCLiveTradingBot:
     def __init__(self):
         self.config = {
             'HYPERLIQUID_API_KEY': HYPERLIQUID_API_KEY,
             'HYPERLIQUID_SUBACCOUNT': HYPERLIQUID_SUBACCOUNT,
-            'SYMBOLS': ["AVAX"],  
+            'SYMBOLS': ["BTC"],  
             'TIMEFRAME': TIMEFRAME,
             'HTF_TIMEFRAME': HTF_TIMEFRAME,
             'POSITION_SIZE': POSITION_SIZE,
@@ -128,52 +128,61 @@ class AVAXLiveTradingBot:
                         raise e  # Re-raise if not rate limited or max retries reached
     
     async def fetch_live_data(self):
-        """Fetch live market data for AVAX"""
+        """Fetch live market data for BTC"""
         try:
-            self.logger.info(f"Fetching live data for AVAX...")
+            self.logger.info(f"Fetching live data for BTC...")
+            
+            # Add delay to prevent rate limiting
+            await asyncio.sleep(2)
             
             # Fetch LTF data (1m) - increase to 1000 candles
             ltf_data = await self.client.get_ohlcv(
-                symbol="AVAX",
+                symbol="BTC",
                 timeframe=self.config['TIMEFRAME'],
                 limit=500
             )
             
+            # Add delay between API calls
+            await asyncio.sleep(2)
+            
             # Fetch HTF data (15m) - reduced to 192 candles
             htf_data = await self.client.get_ohlcv(
-                symbol="AVAX",
+                symbol="BTC",
                 timeframe=self.config['HTF_TIMEFRAME'],
                 limit=100  # 2 days of 15m candles
             )
             
+            # Add delay between API calls
+            await asyncio.sleep(2)
+            
             # Get current price
-            current_price = self.client.get_current_price("AVAX")
+            current_price = self.client.get_current_price("BTC")
             
             if ltf_data.empty or htf_data.empty:
-                self.logger.error(f"Failed to fetch market data for AVAX")
+                self.logger.error(f"Failed to fetch market data for BTC")
                 return None, None, None
             
             return ltf_data, htf_data, current_price
             
         except Exception as e:
-            self.logger.error(f"Error fetching live data for AVAX: {e}")
+            self.logger.error(f"Error fetching live data for BTC: {e}")
             return None, None, None
     
     def calculate_position_size(self, entry_price, stop_loss, direction):
         """Calculate position size based on risk management rules with capital and leverage constraints"""
-        # AVAX-specific: Ensure minimum 3-cent stop loss distance
-        min_stop_distance = 0.03  # 3 cents minimum
+        # BTC-specific: Ensure minimum 3-cent stop loss distance
+        min_stop_distance = 100.0  # 3 cents minimum
         
         if direction == 'long':
             current_stop_distance = entry_price - stop_loss
             if current_stop_distance < min_stop_distance:
                 stop_loss = entry_price - min_stop_distance
-                self.logger.info(f"AVAX: Stop loss adjusted to minimum 3-cent distance: ${stop_loss:.4f}")
+                self.logger.info(f"BTC: Stop loss adjusted to minimum 3-cent distance: ${stop_loss:.4f}")
         else:  # short
             current_stop_distance = stop_loss - entry_price
             if current_stop_distance < min_stop_distance:
                 stop_loss = entry_price + min_stop_distance
-                self.logger.info(f"AVAX: Stop loss adjusted to minimum 3-cent distance: ${stop_loss:.4f}")
+                self.logger.info(f"BTC: Stop loss adjusted to minimum 3-cent distance: ${stop_loss:.4f}")
         
         # FIXED: Use $10 fixed risk as originally requested
         target_risk = 1  # $10 fixed risk (as you wanted)
@@ -195,13 +204,13 @@ class AVAXLiveTradingBot:
         # Calculate position value (size × entry price)
         position_value = position_size * entry_price
         
-        # Get leverage for AVAX
-        leverage = self.config['MAX_LEVERAGE'].get("AVAX", 10)  # Use 10x for AVAX
+        # Get leverage for BTC
+        leverage = self.config['MAX_LEVERAGE'].get("BTC", 10)  # Use 10x for BTC
         
         # Capital constraints: $10,000 capital with leverage = max position value
         max_position_value = 10000 * leverage
         
-        self.logger.info(f"DEBUG: Position calculation for AVAX:")
+        self.logger.info(f"DEBUG: Position calculation for BTC:")
         self.logger.info(f"  Entry: ${entry_price:.4f}, Stop: ${stop_loss:.4f}")
         self.logger.info(f"  Risk amount: ${risk_amount:.4f}")
         self.logger.info(f"  Position size: {position_size:.2f}")
@@ -325,7 +334,7 @@ class AVAXLiveTradingBot:
                         fill_oid = fill.get('oid')
                         fill_coin = fill.get('coin')
                         
-                        if fill_coin == 'AVAX' and fill_oid:
+                        if fill_coin == 'BTC' and fill_oid:
                             # Check if this fill matches our pending order by either order ID
                             pending_regular_id = self.pending_order.get('regular_order_id')
                             pending_client_id = self.pending_order.get('order_id')  # This is the client order ID
@@ -344,7 +353,7 @@ class AVAXLiveTradingBot:
                             # Check if this fill matches our order
                             if (pending_regular_id_int == fill_oid_int or 
                                 pending_client_id == fill_oid_int):
-                                self.logger.info(f"🔍 POTENTIAL MATCH: AVAX fill OID {fill_oid}")
+                                self.logger.info(f"🔍 POTENTIAL MATCH: BTC fill OID {fill_oid}")
                                 self.logger.info(f"   Pending Regular ID: {pending_regular_id_int}")
                                 self.logger.info(f"   Pending Client ID: {pending_client_id}")
                                 self.logger.info(f"   Fill OID: {fill_oid_int}")
@@ -372,7 +381,7 @@ class AVAXLiveTradingBot:
                                 
                                 # Send Telegram notification
                                 send_telegram_message(
-                                    f"✅ MOMENTUM ALO FILLED: AVAX {self.pending_order['direction'].upper()} at ${fill_price:.4f} | "
+                                    f"✅ MOMENTUM ALO FILLED: BTC {self.pending_order['direction'].upper()} at ${fill_price:.4f} | "
                                     f"FVG Stop: ${self.current_position['stop_loss']:.4f} | Size: {fill_size:.4f}"
                                 )
                                 
@@ -390,7 +399,7 @@ class AVAXLiveTradingBot:
                         fill_oid = fill.get('oid')
                         fill_coin = fill.get('coin')
                         
-                        if fill_coin == 'AVAX' and fill_oid:
+                        if fill_coin == 'BTC' and fill_oid:
                             # Check if this fill matches our pending order by either order ID
                             pending_regular_id = self.pending_order.get('regular_order_id')
                             pending_client_id = self.pending_order.get('order_id')  # This is the client order ID
@@ -409,7 +418,7 @@ class AVAXLiveTradingBot:
                             # Check if this fill matches our order
                             if (pending_regular_id_int == fill_oid_int or 
                                 pending_client_id == fill_oid_int):
-                                self.logger.info(f"🔍 POTENTIAL MATCH: AVAX fill OID {fill_oid}")
+                                self.logger.info(f"🔍 POTENTIAL MATCH: BTC fill OID {fill_oid}")
                                 self.logger.info(f"   Pending Regular ID: {pending_regular_id_int}")
                                 self.logger.info(f"   Pending Client ID: {pending_client_id}")
                                 self.logger.info(f"   Fill OID: {fill_oid_int}")
@@ -437,7 +446,7 @@ class AVAXLiveTradingBot:
                                 
                                 # Send Telegram notification
                                 send_telegram_message(
-                                    f"✅ MOMENTUM ALO FILLED: AVAX {self.pending_order['direction'].upper()} at ${fill_price:.4f} | "
+                                    f"✅ MOMENTUM ALO FILLED: BTC {self.pending_order['direction'].upper()} at ${fill_price:.4f} | "
                                     f"FVG Stop: ${self.current_position['stop_loss']:.4f} | Size: {fill_size:.4f}"
                                 )
                                 
@@ -460,16 +469,16 @@ class AVAXLiveTradingBot:
                 positions = []
                 
             if positions and self.pending_order:
-                # Only check AVAX positions
-                avax_positions = [pos for pos in positions if pos.get('coin') == 'AVAX']
-                if avax_positions:
-                    self.logger.info(f"🔍 Checking {len(avax_positions)} AVAX positions for our pending order")
+                # Only check BTC positions
+                BTC_positions = [pos for pos in positions if pos.get('coin') == 'BTC']
+                if BTC_positions:
+                    self.logger.info(f"🔍 Checking {len(BTC_positions)} BTC positions for our pending order")
                     
-                    for position in avax_positions:
+                    for position in BTC_positions:
                         position_size = float(position.get('size', 0))
                         
                         if position_size != 0:
-                            self.logger.info(f"🔍 Found AVAX position: size {position_size}")
+                            self.logger.info(f"🔍 Found BTC position: size {position_size}")
                             
                             # If we have a pending order and find a position, assume it was filled
                             self.logger.info(f"✅ POSITION CREATED via Elixir monitor!")
@@ -493,7 +502,7 @@ class AVAXLiveTradingBot:
                             
                             # Send Telegram notification
                             send_telegram_message(
-                                f"✅ MOMENTUM ALO FILLED: AVAX {self.pending_order['direction'].upper()} at ${entry_price:.4f} | "
+                                f"✅ MOMENTUM ALO FILLED: BTC {self.pending_order['direction'].upper()} at ${entry_price:.4f} | "
                                 f"FVG Stop: ${self.current_position['stop_loss']:.4f} | Size: {abs(position_size):.4f}"
                             )
                             
@@ -528,7 +537,7 @@ class AVAXLiveTradingBot:
         try:
             # Create order data for Elixir monitor
             order_data = {
-                'symbol': 'AVAX',
+                'symbol': 'BTC',
                 'direction': setup['direction'],
                 'size': order_result.get('fill_size', order_result.get('size')),
                 'limit_price': setup['entry_price'],
@@ -891,7 +900,7 @@ class AVAXLiveTradingBot:
         
         # 5 minute timeout with constant checking
         timeout_seconds = 300  # 5 minutes
-        check_interval = 0.5   # Check every 0.5 seconds
+        check_interval = 2   # Check every 0.5 seconds
         
         self.logger.info(f"🔍 STARTING CONSTANT ALO MONITORING:")
         self.logger.info(f"  Order ID: {order_id}")
@@ -971,7 +980,7 @@ class AVAXLiveTradingBot:
                     
                     # Send Telegram notification IMMEDIATELY
                     send_telegram_message(
-                        f"✅ MOMENTUM ALO FILLED: AVAX {direction.upper()} at ${self.current_position['entry_price']:.4f} | "
+                        f"✅ MOMENTUM ALO FILLED: BTC {direction.upper()} at ${self.current_position['entry_price']:.4f} | "
                         f"FVG Stop: ${self.current_position['stop_loss']:.4f} | Size: {self.current_position['size']:.4f}"
                     )
                     
@@ -1013,7 +1022,7 @@ class AVAXLiveTradingBot:
                     
                     # Send Telegram notification IMMEDIATELY
                     send_telegram_message(
-                        f"✅ ALO ORDER FILLED: AVAX {direction.upper()} at ${self.current_position['entry_price']:.4f} | "
+                        f"✅ ALO ORDER FILLED: BTC {direction.upper()} at ${self.current_position['entry_price']:.4f} | "
                         f"Starting stop monitoring | Stop: ${self.current_position['stop_loss']:.4f}"
                     )
                     
@@ -1048,7 +1057,7 @@ class AVAXLiveTradingBot:
                     
                     # Send Telegram notification IMMEDIATELY
                     send_telegram_message(
-                        f"✅ ALO ORDER FILLED: AVAX {direction.upper()} at ${self.current_position['entry_price']:.4f} | "
+                        f"✅ ALO ORDER FILLED: BTC {direction.upper()} at ${self.current_position['entry_price']:.4f} | "
                         f"Starting stop monitoring | Stop: ${self.current_position['stop_loss']:.4f}"
                     )
                     
@@ -1089,7 +1098,7 @@ class AVAXLiveTradingBot:
                                     
                                     # Send Telegram notification IMMEDIATELY
                                     send_telegram_message(
-                                        f"✅ ALO ORDER FILLED: AVAX {direction.upper()} at ${self.current_position['entry_price']:.4f} | "
+                                        f"✅ ALO ORDER FILLED: BTC {direction.upper()} at ${self.current_position['entry_price']:.4f} | "
                                         f"Starting stop monitoring | Stop: ${self.current_position['stop_loss']:.4f}"
                                     )
                                     
@@ -1130,7 +1139,7 @@ class AVAXLiveTradingBot:
         
         if cancel_result['status'] == 'cancelled':
             self.logger.info(f"✅ ALO ORDER CANCELLED SUCCESSFULLY after timeout")
-            send_telegram_message(f"⏰ ALO ORDER CANCELLED: AVAX {direction.upper()} (5min timeout)")
+            send_telegram_message(f"⏰ ALO ORDER CANCELLED: BTC {direction.upper()} (5min timeout)")
         else:
             self.logger.error(f"❌ FAILED TO CANCEL ALO ORDER: {cancel_result}")
         
@@ -1140,14 +1149,14 @@ class AVAXLiveTradingBot:
     async def open_live_position(self, setup, current_price):
         """Open a live trading position using INVERTED ALO limit orders for momentum"""
         if self.current_position is not None or self.position_lock:
-            self.logger.warning(f"Already in a position for AVAX or position lock active, cannot open new one")
+            self.logger.warning(f"Already in a position for BTC or position lock active, cannot open new one")
             return False
         
         try:
             # Set position lock to prevent race conditions
             self.position_lock = True
             
-            self.logger.info(f"DEBUG: Opening live position for AVAX with setup: {setup}")
+            self.logger.info(f"DEBUG: Opening live position for BTC with setup: {setup}")
             
             # MOMENTUM APPROACH: Stop placement based on FVG
             # For LONG: Stop right below the FVG bottom
@@ -1174,8 +1183,8 @@ class AVAXLiveTradingBot:
             # Use adjusted stop if it was changed (respects minimum size rule)
             final_stop = adjusted_stop if adjusted_stop != stop_loss else stop_loss
             
-            # Get leverage for AVAX
-            leverage = self.config['MAX_LEVERAGE'].get("AVAX", 10)
+            # Get leverage for BTC
+            leverage = self.config['MAX_LEVERAGE'].get("BTC", 10)
             
             # Place the actual order on Hyperliquid using INVERTED ALO limit order
             is_buy = setup['direction'] == 'long'
@@ -1201,7 +1210,7 @@ class AVAXLiveTradingBot:
             # Round to 3 decimal places
             limit_price = round(limit_price, 3)
             
-            self.logger.info(f"📈 Opening MOMENTUM position for AVAX (INVERTED ALO LIMIT ORDER):")
+            self.logger.info(f"📈 Opening MOMENTUM position for BTC (INVERTED ALO LIMIT ORDER):")
             self.logger.info(f"  Direction: {setup['direction'].upper()}")
             self.logger.info(f"  INVERTED ALO Limit Price: ${limit_price:.4f}")
             self.logger.info(f"  Current Market: ${current_price:.4f}")
@@ -1212,7 +1221,7 @@ class AVAXLiveTradingBot:
             self.logger.info(f"  Leverage: {leverage}x")
             self.logger.info(f"  Order Type: INVERTED ALO (Momentum Following)")
             
-            order_result = await self.place_limit_order("AVAX", is_buy, position_size, limit_price, "Alo")
+            order_result = await self.place_limit_order("BTC", is_buy, position_size, limit_price, "Alo")
             
             if order_result['status'] in ['filled', 'resting']:
                 self.add_order_to_elixir_monitor(order_result, setup, final_stop)
@@ -1240,7 +1249,7 @@ class AVAXLiveTradingBot:
                 
                 # Send Telegram notification
                 send_telegram_message(
-                    f"✅ MOMENTUM ALO FILLED: AVAX {setup['direction'].upper()} at ${order_result['fill_price']:.4f} | "
+                    f"✅ MOMENTUM ALO FILLED: BTC {setup['direction'].upper()} at ${order_result['fill_price']:.4f} | "
                     f"FVG Stop: ${final_stop:.4f} | Size: {order_result['fill_size']:.4f} | Risk: $10"
                 )
                 
@@ -1256,7 +1265,7 @@ class AVAXLiveTradingBot:
                 self.pending_order = {
                     'order_id': order_result['cloid'],  # Store client order ID for monitoring
                     'regular_order_id': order_result['order_id'],  # Store regular order ID as backup
-                    'symbol': 'AVAX',
+                    'symbol': 'BTC',
                     'direction': setup['direction'],
                     'limit_price': limit_price,
                     'size': position_size,
@@ -1278,7 +1287,7 @@ class AVAXLiveTradingBot:
                 
                 # Send Telegram notification
                 send_telegram_message(
-                    f"⏳ MOMENTUM ALO PLACED: AVAX {setup['direction'].upper()} @ ${limit_price:.4f} | "
+                    f"⏳ MOMENTUM ALO PLACED: BTC {setup['direction'].upper()} @ ${limit_price:.4f} | "
                     f"FVG Stop: ${final_stop:.4f} | Waiting for momentum"
                 )
                 
@@ -1305,10 +1314,10 @@ class AVAXLiveTradingBot:
             return False
         try:
             self.initialize_api_clients()
-            self.logger.info(f"📉 Closing live position for AVAX (INSTANT EXECUTION): {reason}")
+            self.logger.info(f"📉 Closing live position for BTC (INSTANT EXECUTION): {reason}")
             # Use market_close for instant execution
             close_result = self.exchange.market_close(
-                coin="AVAX",
+                coin="BTC",
                 px=None,  # No limit price - instant market execution
                 slippage=0.001
             )
@@ -1350,7 +1359,7 @@ class AVAXLiveTradingBot:
                     }
                     self.trade_history.append(trade_record)
                     
-                    self.logger.info(f"✅ LIVE POSITION CLOSED FOR AVAX (INSTANT EXECUTION):")
+                    self.logger.info(f"✅ LIVE POSITION CLOSED FOR BTC (INSTANT EXECUTION):")
                     self.logger.info(f"  Exit Price: ${close_price:.4f}")
                     self.logger.info(f"  P&L: ${pnl:.2f}")
                     self.logger.info(f"  Reason: {reason}")
@@ -1360,7 +1369,7 @@ class AVAXLiveTradingBot:
                     # Send Telegram notification
                     pnl_emoji = "" if pnl > 0 else "🔴"
                     send_telegram_message(
-                        f"{pnl_emoji} INSTANT TRADE CLOSED: AVAX at ${close_price:.4f} | "
+                        f"{pnl_emoji} INSTANT TRADE CLOSED: BTC at ${close_price:.4f} | "
                         f"P&L: ${pnl:.2f} | Reason: {reason} | Total: ${self.total_pnl:.2f}"
                     )
                     
@@ -1387,19 +1396,19 @@ class AVAXLiveTradingBot:
         """Start the continuous stop monitoring task"""
         if self.current_position is not None and not self.stop_monitoring_active:
             self.stop_monitoring_task = asyncio.create_task(self.monitor_stops_continuously())
-            self.logger.info("Started continuous stop monitoring for AVAX")
+            self.logger.info("Started continuous stop monitoring for BTC")
     
     def stop_stop_monitoring(self):
         """Stop the continuous stop monitoring task"""
         self.stop_monitoring_active = False
         if self.stop_monitoring_task and not self.stop_monitoring_task.done():
             self.stop_monitoring_task.cancel()
-        self.logger.info("Stopped continuous stop monitoring for AVAX")
+        self.logger.info("Stopped continuous stop monitoring for BTC")
     
 
     async def monitor_stops_continuously(self):
         """Monitor stops with FVG-based momentum logic"""
-        self.logger.info("🔍 Starting FVG-based momentum stop monitoring for AVAX")
+        self.logger.info("🔍 Starting FVG-based momentum stop monitoring for BTC")
         self.logger.info("🔍 This should run every 0.5 seconds when in a position")
         self.stop_monitoring_active = True
         monitor_count = 0
@@ -1409,11 +1418,11 @@ class AVAXLiveTradingBot:
                 monitor_count += 1
                 
                 # Get current price
-                current_price = self.client.get_current_price("AVAX")
+                current_price = self.client.get_current_price("BTC")
                 
                 if current_price is None:
                     self.logger.debug(f"🔍 MONITOR #{monitor_count}: Failed to get current price")
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(2)
                     continue
                 
                 position = self.current_position
@@ -1442,7 +1451,7 @@ class AVAXLiveTradingBot:
                 
                 # Log detailed monitoring info every 10 checks (every 5 seconds)
                 if monitor_count % 10 == 0:
-                    self.logger.info(f"🔍 MONITOR #{monitor_count}: AVAX {direction.upper()}")
+                    self.logger.info(f"🔍 MONITOR #{monitor_count}: BTC {direction.upper()}")
                     self.logger.info(f"  Price: ${current_price:.4f} | Entry: ${entry_price:.4f} | Stop: ${stop_loss:.4f}")
                     self.logger.info(f"  P&L: ${current_pnl:.4f} | R:R: {rr_ratio:.2f} | Stop Distance: ${stop_distance:.4f}")
                     if fvg:
@@ -1456,7 +1465,7 @@ class AVAXLiveTradingBot:
                         self.logger.info(f"✅ MOMENTUM TRAILING ENABLED immediately!")
                         position['trailing_enabled'] = True
                         position['original_stop_loss'] = position['stop_loss']
-                        send_telegram_message(f"✅ MOMENTUM TRAILING ENABLED for AVAX")
+                        send_telegram_message(f"✅ MOMENTUM TRAILING ENABLED for BTC")
                     
                     # Update trailing stop more frequently for momentum
                     if monitor_count % 10 == 0:  # Every 5 seconds
@@ -1470,42 +1479,42 @@ class AVAXLiveTradingBot:
                                     self.logger.info(f"🔄 MOMENTUM TRAILING UPDATED!")
                                     self.logger.info(f"  Old Stop: ${old_stop:.4f} → New Stop: ${new_stop:.4f}")
                                     self.logger.info(f"  R:R: {rr_ratio:.2f} | Profit: ${current_pnl:.4f}")
-                                    send_telegram_message(f"🔄 MOMENTUM TRAILING: AVAX ${old_stop:.4f} → ${new_stop:.4f} (R:R: {rr_ratio:.2f})")
+                                    send_telegram_message(f"🔄 MOMENTUM TRAILING: BTC ${old_stop:.4f} → ${new_stop:.4f} (R:R: {rr_ratio:.2f})")
                         except Exception as e:
                             self.logger.error(f"Error updating momentum trailing stop: {e}")
             
                 # Check if stop loss is hit
                 if direction == 'long' and current_price <= position['stop_loss']:
-                    self.logger.info(f"🛑 MOMENTUM MONITOR #{monitor_count}: FVG STOP HIT for AVAX LONG")
+                    self.logger.info(f"🛑 MOMENTUM MONITOR #{monitor_count}: FVG STOP HIT for BTC LONG")
                     self.logger.info(f"  Price: ${current_price:.4f} <= FVG Stop: ${position['stop_loss']:.4f}")
                     self.logger.info(f"  Final P&L: ${current_pnl:.4f} | R:R: {rr_ratio:.2f}")
-                    send_telegram_message(f"🛑 FVG STOP HIT: AVAX LONG at ${position['stop_loss']:.4f}")
+                    send_telegram_message(f"🛑 FVG STOP HIT: BTC LONG at ${position['stop_loss']:.4f}")
                     self.close_live_position("FVG Stop Loss Hit")
                     self.stop_monitoring_active = False
                     break
                 elif direction == 'short' and current_price >= position['stop_loss']:
-                    self.logger.info(f"🛑 MOMENTUM MONITOR #{monitor_count}: FVG STOP HIT for AVAX SHORT")
+                    self.logger.info(f"🛑 MOMENTUM MONITOR #{monitor_count}: FVG STOP HIT for BTC SHORT")
                     self.logger.info(f"  Price: ${current_price:.4f} >= FVG Stop: ${position['stop_loss']:.4f}")
                     self.logger.info(f"  Final P&L: ${current_pnl:.4f} | R:R: {rr_ratio:.2f}")
-                    send_telegram_message(f"🛑 FVG STOP HIT: AVAX SHORT at ${position['stop_loss']:.4f}")
+                    send_telegram_message(f"🛑 FVG STOP HIT: BTC SHORT at ${position['stop_loss']:.4f}")
                     self.close_live_position("FVG Stop Loss Hit")
                     self.stop_monitoring_active = False
                     break
                 
                 # Remove market order logic on stop hit
                 # Wait 0.5 seconds before next check
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(2)
                 
             except Exception as e:
                 self.logger.error(f"Error in FVG momentum stop monitoring: {e}")
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(2)
         
-        self.logger.info("🔍 Continuous stop monitoring stopped for AVAX")
+        self.logger.info("🔍 Continuous stop monitoring stopped for BTC")
     
     async def run_live_trading(self):
         """Main live trading loop"""
-        self.logger.info("🚀 Starting AVAX Live Trading Bot...")
-        self.logger.info(f"Trading symbol: AVAX")
+        self.logger.info("🚀 Starting BTC Live Trading Bot...")
+        self.logger.info(f"Trading symbol: BTC")
         self.logger.info(f"Risk per trade: $1")  # FIXED: Show $10 risk
         
         candle_idx = 0  # Track candle index for cooldown
@@ -1517,18 +1526,18 @@ class AVAXLiveTradingBot:
                 
                 try:
                     # DEBUG: Log every cycle for visibility
-                    if cycle_count % 20 == 0:  # Every 10 seconds (20 cycles * 0.5s)
-                        self.logger.info(f"🔄 TRADING CYCLE #{cycle_count} - Searching for AVAX setups...")
+                    if cycle_count % 40 == 0:  # Every 80 seconds (40 cycles * 2.0s)
+                        self.logger.info(f"🔄 TRADING CYCLE #{cycle_count} - Searching for BTC setups...")
                     
                     # Check if we're in a position OR have a pending order
                     if self.current_position is not None or self.pending_order is not None:
                         # Already in a position OR waiting for ALO order to fill
                         if self.current_position:
-                            self.logger.info(f"📊 AVAX already has active position: {self.current_position['direction']} at ${self.current_position['entry_price']:.2f}")
+                            self.logger.info(f"📊 BTC already has active position: {self.current_position['direction']} at ${self.current_position['entry_price']:.2f}")
                         if self.pending_order:
-                            self.logger.info(f"⏳ AVAX has pending ALO order: {self.pending_order['direction']} @ ${self.pending_order['limit_price']:.2f}")
+                            self.logger.info(f"⏳ BTC has pending ALO order: {self.pending_order['direction']} @ ${self.pending_order['limit_price']:.2f}")
                         
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(2.0)
                         continue
                     
                     # Check cooldown period (5 minutes instead of 1 minute)
@@ -1538,9 +1547,9 @@ class AVAXLiveTradingBot:
                         cooldown_remaining = 300 - time_since_close.total_seconds()  # 5 minutes = 300 seconds
                     
                     if cooldown_remaining and cooldown_remaining > 0:
-                        self.logger.info(f"⏳ COOLDOWN ACTIVE for AVAX: {cooldown_remaining:.0f}s remaining")
+                        self.logger.info(f"⏳ COOLDOWN ACTIVE for BTC: {cooldown_remaining:.0f}s remaining")
                         candle_idx += 1
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(2.0)
                         continue
                     
                     # Only check Elixir monitor if we have a pending order
@@ -1554,10 +1563,10 @@ class AVAXLiveTradingBot:
                                 self.logger.info(f"✅ ELIXIR UPDATE PROCESSED SUCCESSFULLY!")
                     
                     # MAIN LOOP: No position, no pending order, no cooldown - SEARCHING FOR TRADES
-                    if cycle_count % 10 == 0:  # Log every 10 cycles when searching
-                        self.logger.info(f"🔍 MAIN LOOP: Searching for AVAX trade setups... (Cycle #{cycle_count})")
+                    if cycle_count % 20 == 0:  # Log every 20 cycles when searching
+                        self.logger.info(f"🔍 MAIN LOOP: Searching for BTC trade setups... (Cycle #{cycle_count})")
                     
-                    # Fetch live data for AVAX
+                    # Fetch live data for BTC
                     ltf_data, htf_data, current_price = await self.fetch_live_data()
                     if ltf_data is not None and current_price is not None:
                         # Get current candle info for stop loss checks
@@ -1569,27 +1578,27 @@ class AVAXLiveTradingBot:
                         if self.current_position is None and self.pending_order is None:
                             setup = self.strategy.check_entry_conditions(ltf_data, htf_data)
                             if setup:
-                                setup['symbol'] = 'AVAX'  # Add symbol to setup
+                                setup['symbol'] = 'BTC'  # Add symbol to setup
                                 # Only log locally, don't send Telegram for setups
-                                self.logger.info(f"✅ Setup found for AVAX: {setup['direction']} at ${setup['entry_price']:.2f}")
+                                self.logger.info(f"✅ Setup found for BTC: {setup['direction']} at ${setup['entry_price']:.2f}")
                                 success = await self.open_live_position(setup, current_price)
                                 if not success:
-                                    self.logger.error(f"❌ FAILED to open position for AVAX")
+                                    self.logger.error(f"❌ FAILED to open position for BTC")
                                 else:
-                                    self.logger.info(f"✅ SUCCESSFULLY opened position for AVAX")
+                                    self.logger.info(f"✅ SUCCESSFULLY opened position for BTC")
                     
                     candle_idx += 1
-                    await asyncio.sleep(0.5)  # Changed from 10s to 0.5s for faster response
+                    await asyncio.sleep(2.0)  # Increased delay to reduce rate limiting
                     
                 except Exception as e:
                     self.logger.error(f"Error in live trading cycle: {e}")
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(2.0)
                     
         except KeyboardInterrupt:
-            self.logger.info("🛑 AVAX live trading stopped by user (Ctrl+C)")
+            self.logger.info("🛑 BTC live trading stopped by user (Ctrl+C)")
         
         if self.current_position is not None:
-            current_price = self.client.get_current_price("AVAX")
+            current_price = self.client.get_current_price("BTC")
             if current_price:
                 self.close_live_position("Session End")
         
@@ -1604,12 +1613,12 @@ class AVAXLiveTradingBot:
             
             if user_state and 'assetPositions' in user_state:
                 for asset_pos in user_state['assetPositions']:
-                    if asset_pos.get('position', {}).get('coin') == 'AVAX':
+                    if asset_pos.get('position', {}).get('coin') == 'BTC':
                         position_data = asset_pos.get('position', {})
                         size = float(position_data.get('szi', 0))
                         
                         if size != 0:  # Position has size
-                            self.logger.info(f"🔍 FOUND EXISTING AVAX POSITION: {position_data}")
+                            self.logger.info(f"🔍 FOUND EXISTING BTC POSITION: {position_data}")
                             
                             # Create position object from existing position
                             entry_price = float(position_data.get('entryPx', 0))
@@ -1619,7 +1628,7 @@ class AVAXLiveTradingBot:
                             stop_loss = entry_price * 0.95 if direction == 'long' else entry_price * 1.05
                             
                             position = {
-                                'symbol': 'AVAX',
+                                'symbol': 'BTC',
                                 'direction': direction,
                                 'entry_price': entry_price,
                                 'stop_loss': stop_loss,
@@ -1652,12 +1661,12 @@ class AVAXLiveTradingBot:
 
 
 async def main():
-    bot = AVAXLiveTradingBot()
+    bot = BTCLiveTradingBot()
     await bot.run_live_trading()
 
 if __name__ == "__main__":
-    print("🚀 AVAX Live Trading Bot - REAL MONEY")
-    print("This bot trades AVAX with real money on Hyperliquid.")
+    print("🚀 BTC Live Trading Bot - REAL MONEY")
+    print("This bot trades BTC with real money on Hyperliquid.")
     print("Risk per trade: $1")
     print("Bot will run INDEFINITELY until you press Ctrl+C")
     print("Make sure you have set up your Hyperliquid API key and have sufficient balance.")

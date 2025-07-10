@@ -132,6 +132,9 @@ class AVAXLiveTradingBot:
         try:
             self.logger.info(f"Fetching live data for AVAX...")
             
+            # Add delay to prevent rate limiting
+            await asyncio.sleep(2)
+            
             # Fetch LTF data (1m) - increase to 1000 candles
             ltf_data = await self.client.get_ohlcv(
                 symbol="AVAX",
@@ -139,12 +142,18 @@ class AVAXLiveTradingBot:
                 limit=500
             )
             
+            # Add delay between API calls
+            await asyncio.sleep(2)
+            
             # Fetch HTF data (15m) - reduced to 192 candles
             htf_data = await self.client.get_ohlcv(
                 symbol="AVAX",
                 timeframe=self.config['HTF_TIMEFRAME'],
                 limit=100  # 2 days of 15m candles
             )
+            
+            # Add delay between API calls
+            await asyncio.sleep(2)
             
             # Get current price
             current_price = self.client.get_current_price("AVAX")
@@ -891,7 +900,7 @@ class AVAXLiveTradingBot:
         
         # 5 minute timeout with constant checking
         timeout_seconds = 300  # 5 minutes
-        check_interval = 0.5   # Check every 0.5 seconds
+        check_interval = 2   # Check every 0.5 seconds
         
         self.logger.info(f"🔍 STARTING CONSTANT ALO MONITORING:")
         self.logger.info(f"  Order ID: {order_id}")
@@ -1413,7 +1422,7 @@ class AVAXLiveTradingBot:
                 
                 if current_price is None:
                     self.logger.debug(f"🔍 MONITOR #{monitor_count}: Failed to get current price")
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(2)
                     continue
                 
                 position = self.current_position
@@ -1494,11 +1503,11 @@ class AVAXLiveTradingBot:
                 
                 # Remove market order logic on stop hit
                 # Wait 0.5 seconds before next check
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(2)
                 
             except Exception as e:
                 self.logger.error(f"Error in FVG momentum stop monitoring: {e}")
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(2)
         
         self.logger.info("🔍 Continuous stop monitoring stopped for AVAX")
     
@@ -1517,7 +1526,7 @@ class AVAXLiveTradingBot:
                 
                 try:
                     # DEBUG: Log every cycle for visibility
-                    if cycle_count % 20 == 0:  # Every 10 seconds (20 cycles * 0.5s)
+                    if cycle_count % 40 == 0:  # Every 80 seconds (40 cycles * 2.0s)
                         self.logger.info(f"🔄 TRADING CYCLE #{cycle_count} - Searching for AVAX setups...")
                     
                     # Check if we're in a position OR have a pending order
@@ -1528,7 +1537,7 @@ class AVAXLiveTradingBot:
                         if self.pending_order:
                             self.logger.info(f"⏳ AVAX has pending ALO order: {self.pending_order['direction']} @ ${self.pending_order['limit_price']:.2f}")
                         
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(2.0)
                         continue
                     
                     # Check cooldown period (5 minutes instead of 1 minute)
@@ -1540,7 +1549,7 @@ class AVAXLiveTradingBot:
                     if cooldown_remaining and cooldown_remaining > 0:
                         self.logger.info(f"⏳ COOLDOWN ACTIVE for AVAX: {cooldown_remaining:.0f}s remaining")
                         candle_idx += 1
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(2.0)
                         continue
                     
                     # Only check Elixir monitor if we have a pending order
@@ -1554,7 +1563,7 @@ class AVAXLiveTradingBot:
                                 self.logger.info(f"✅ ELIXIR UPDATE PROCESSED SUCCESSFULLY!")
                     
                     # MAIN LOOP: No position, no pending order, no cooldown - SEARCHING FOR TRADES
-                    if cycle_count % 10 == 0:  # Log every 10 cycles when searching
+                    if cycle_count % 20 == 0:  # Log every 20 cycles when searching
                         self.logger.info(f"🔍 MAIN LOOP: Searching for AVAX trade setups... (Cycle #{cycle_count})")
                     
                     # Fetch live data for AVAX
@@ -1579,11 +1588,11 @@ class AVAXLiveTradingBot:
                                     self.logger.info(f"✅ SUCCESSFULLY opened position for AVAX")
                     
                     candle_idx += 1
-                    await asyncio.sleep(0.5)  # Changed from 10s to 0.5s for faster response
+                    await asyncio.sleep(2.0)  # Increased delay to reduce rate limiting
                     
                 except Exception as e:
                     self.logger.error(f"Error in live trading cycle: {e}")
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(2.0)
                     
         except KeyboardInterrupt:
             self.logger.info("🛑 AVAX live trading stopped by user (Ctrl+C)")
