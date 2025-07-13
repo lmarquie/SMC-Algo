@@ -132,9 +132,6 @@ class AVAXLiveTradingBot:
         try:
             self.logger.info(f"Fetching live data for AVAX...")
             
-            # Add delay to prevent rate limiting
-            await asyncio.sleep(2)
-            
             # Fetch LTF data (1m) - increase to 1000 candles
             ltf_data = await self.client.get_ohlcv(
                 symbol="AVAX",
@@ -142,18 +139,12 @@ class AVAXLiveTradingBot:
                 limit=500
             )
             
-            # Add delay between API calls
-            await asyncio.sleep(2)
-            
             # Fetch HTF data (15m) - reduced to 192 candles
             htf_data = await self.client.get_ohlcv(
                 symbol="AVAX",
                 timeframe=self.config['HTF_TIMEFRAME'],
                 limit=100  # 2 days of 15m candles
             )
-            
-            # Add delay between API calls
-            await asyncio.sleep(2)
             
             # Get current price
             current_price = self.client.get_current_price("AVAX")
@@ -170,19 +161,19 @@ class AVAXLiveTradingBot:
     
     def calculate_position_size(self, entry_price, stop_loss, direction):
         """Calculate position size based on risk management rules with capital and leverage constraints"""
-        # AVAX-specific: Ensure minimum 3-cent stop loss distance
-        min_stop_distance = 0.03  # 3 cents minimum
+        # AVAX-specific: Ensure minimum stop loss distance as 0.0015% of current price
+        min_stop_distance = entry_price * 0.0015  # 0.0015% of entry price
         
         if direction == 'long':
             current_stop_distance = entry_price - stop_loss
             if current_stop_distance < min_stop_distance:
                 stop_loss = entry_price - min_stop_distance
-                self.logger.info(f"AVAX: Stop loss adjusted to minimum 3-cent distance: ${stop_loss:.4f}")
+                self.logger.info(f"AVAX: Stop loss adjusted to minimum 0.0015% distance: ${stop_loss:.4f} ({min_stop_distance*100:.4f}%)")
         else:  # short
             current_stop_distance = stop_loss - entry_price
             if current_stop_distance < min_stop_distance:
                 stop_loss = entry_price + min_stop_distance
-                self.logger.info(f"AVAX: Stop loss adjusted to minimum 3-cent distance: ${stop_loss:.4f}")
+                self.logger.info(f"AVAX: Stop loss adjusted to minimum 0.0015% distance: ${stop_loss:.4f} ({min_stop_distance*100:.4f}%)")
         
         # FIXED: Use $10 fixed risk as originally requested
         target_risk = 1  # $10 fixed risk (as you wanted)
@@ -302,161 +293,96 @@ class AVAXLiveTradingBot:
             if not self.pending_order:
                 self.logger.debug(f"No pending order to check")
                 return False
-            
-            # Check fills for our pending order - only recent ones
+
+            # Track cumulative filled size and cost for this order
+            if 'cumulative_filled' not in self.pending_order:
+                self.pending_order['cumulative_filled'] = 0.0
+            if 'cumulative_cost' not in self.pending_order:
+                self.pending_order['cumulative_cost'] = 0.0
+
             fills = state_data.get('fills', [])
-            
-            # Ensure fills is a list, not a string
             if isinstance(fills, str):
                 self.logger.warning(f"Fills is a string, not a list: {fills}")
                 fills = []
             elif not isinstance(fills, list):
                 self.logger.warning(f"Fills is not a list: {type(fills)}")
                 fills = []
-                
+
+            order_time = self.pending_order.get('order_time')
+            order_size = float(self.pending_order.get('size', 0))
+            order_timestamp_ms = int(order_time.timestamp() * 1000) if order_time else 0
+
+            filled_this_update = 0.0
+            cost_this_update = 0.0
+
             if fills and self.pending_order:
-                # Only check fills that are newer than when our pending order was placed
-                order_time = self.pending_order.get('order_time')
-                if order_time:
-                    # Filter fills to only those newer than our order
-                    # Convert order_time to milliseconds timestamp for comparison
-                    order_timestamp_ms = int(order_time.timestamp() * 1000)
-                    recent_fills = []
-                    for fill in fills:
-                        fill_time = fill.get('time')  # This is milliseconds timestamp
-                        if fill_time and isinstance(fill_time, (int, float)) and fill_time > order_timestamp_ms:
-                            recent_fills.append(fill)
-                    
-                    self.logger.info(f"🔍 Checking {len(recent_fills)} recent fills (newer than order)")
-                    
-                    for fill in recent_fills:
-                        # Check if this fill matches our pending order
-                        fill_oid = fill.get('oid')
-                        fill_coin = fill.get('coin')
-                        
-                        if fill_coin == 'AVAX' and fill_oid:
-                            # Check if this fill matches our pending order by either order ID
-                            pending_regular_id = self.pending_order.get('regular_order_id')
-                            pending_client_id = self.pending_order.get('order_id')  # This is the client order ID
-                            
-                            # Convert to same type for comparison
-                            if isinstance(fill_oid, str):
-                                fill_oid_int = int(fill_oid) if fill_oid.isdigit() else fill_oid
-                            else:
-                                fill_oid_int = fill_oid
-                            
-                            if isinstance(pending_regular_id, str):
-                                pending_regular_id_int = int(pending_regular_id) if pending_regular_id.isdigit() else pending_regular_id
-                            else:
-                                pending_regular_id_int = pending_regular_id
-                            
-                            # Check if this fill matches our order
-                            if (pending_regular_id_int == fill_oid_int or 
-                                pending_client_id == fill_oid_int):
-                                self.logger.info(f"🔍 POTENTIAL MATCH: AVAX fill OID {fill_oid}")
-                                self.logger.info(f"   Pending Regular ID: {pending_regular_id_int}")
-                                self.logger.info(f"   Pending Client ID: {pending_client_id}")
-                                self.logger.info(f"   Fill OID: {fill_oid_int}")
-                                
-                                # This is our order - process it
-                                self.logger.info(f"✅ ORDER FILLED via Elixir monitor!")
-                                
-                                # Create position from fill data
-                                fill_price = float(fill.get('px', self.pending_order['limit_price']))
-                                fill_size = float(fill.get('sz', self.pending_order['size']))
-                                
-                                self.current_position = {
-                                    'direction': self.pending_order['direction'],
-                                    'entry_price': fill_price,
-                                    'stop_loss': self.pending_order['stop_loss'],
-                                    'take_profit': self.pending_order['setup'].get('take_profit'),
-                                    'size': fill_size,
-                                    'entry_time': datetime.now(),
-                                    'reason': f"Momentum FVG - {self.pending_order['setup']['reason']}",
-                                    'leverage': self.pending_order['leverage'],
-                                    'order_id': self.pending_order['order_id'],
-                                    'strategy_type': 'momentum',
-                                    'fvg': self.pending_order.get('fvg', {})
-                                }
-                                
-                                # Send Telegram notification
-                                send_telegram_message(
-                                    f"✅ MOMENTUM ALO FILLED: AVAX {self.pending_order['direction'].upper()} at ${fill_price:.4f} | "
-                                    f"FVG Stop: ${self.current_position['stop_loss']:.4f} | Size: {fill_size:.4f}"
-                                )
-                                
-                                # Start stop monitoring
-                                self.start_stop_monitoring()
-                                
-                                # Clear pending order
-                                self.pending_order = None
-                                return True
-                else:
-                    # Fallback: check all fills if we don't have order time
-                    self.logger.info(f"🔍 Checking {len(fills)} fills (no order time available)")
-                    
-                    for fill in fills:
-                        fill_oid = fill.get('oid')
-                        fill_coin = fill.get('coin')
-                        
-                        if fill_coin == 'AVAX' and fill_oid:
-                            # Check if this fill matches our pending order by either order ID
-                            pending_regular_id = self.pending_order.get('regular_order_id')
-                            pending_client_id = self.pending_order.get('order_id')  # This is the client order ID
-                            
-                            # Convert to same type for comparison
-                            if isinstance(fill_oid, str):
-                                fill_oid_int = int(fill_oid) if fill_oid.isdigit() else fill_oid
-                            else:
-                                fill_oid_int = fill_oid
-                            
-                            if isinstance(pending_regular_id, str):
-                                pending_regular_id_int = int(pending_regular_id) if pending_regular_id.isdigit() else pending_regular_id
-                            else:
-                                pending_regular_id_int = pending_regular_id
-                            
-                            # Check if this fill matches our order
-                            if (pending_regular_id_int == fill_oid_int or 
-                                pending_client_id == fill_oid_int):
-                                self.logger.info(f"🔍 POTENTIAL MATCH: AVAX fill OID {fill_oid}")
-                                self.logger.info(f"   Pending Regular ID: {pending_regular_id_int}")
-                                self.logger.info(f"   Pending Client ID: {pending_client_id}")
-                                self.logger.info(f"   Fill OID: {fill_oid_int}")
-                                
-                                # This is our order - process it
-                                self.logger.info(f"✅ ORDER FILLED via Elixir monitor!")
-                                
-                                # Create position from fill data
-                                fill_price = float(fill.get('px', self.pending_order['limit_price']))
-                                fill_size = float(fill.get('sz', self.pending_order['size']))
-                                
-                                self.current_position = {
-                                    'direction': self.pending_order['direction'],
-                                    'entry_price': fill_price,
-                                    'stop_loss': self.pending_order['stop_loss'],
-                                    'take_profit': self.pending_order['setup'].get('take_profit'),
-                                    'size': fill_size,
-                                    'entry_time': datetime.now(),
-                                    'reason': f"Momentum FVG - {self.pending_order['setup']['reason']}",
-                                    'leverage': self.pending_order['leverage'],
-                                    'order_id': self.pending_order['order_id'],
-                                    'strategy_type': 'momentum',
-                                    'fvg': self.pending_order.get('fvg', {})
-                                }
-                                
-                                # Send Telegram notification
-                                send_telegram_message(
-                                    f"✅ MOMENTUM ALO FILLED: AVAX {self.pending_order['direction'].upper()} at ${fill_price:.4f} | "
-                                    f"FVG Stop: ${self.current_position['stop_loss']:.4f} | Size: {fill_size:.4f}"
-                                )
-                                
-                                # Start stop monitoring
-                                self.start_stop_monitoring()
-                                
-                                # Clear pending order
-                                self.pending_order = None
-                                return True
-            
+                for fill in fills:
+                    fill_time = fill.get('time')
+                    fill_coin = fill.get('coin')
+                    fill_oid = fill.get('oid')
+                    fill_size = float(fill.get('sz', 0))
+                    fill_px = float(fill.get('px', self.pending_order['limit_price']))
+                    if (
+                        fill_time and isinstance(fill_time, (int, float)) and fill_time > order_timestamp_ms
+                        and fill_coin == 'AVAX'
+                    ):
+                        pending_regular_id = self.pending_order.get('regular_order_id')
+                        pending_client_id = self.pending_order.get('order_id')
+                        if (
+                            str(fill_oid) == str(pending_regular_id)
+                            or str(fill_oid) == str(pending_client_id)
+                        ):
+                            filled_this_update += fill_size
+                            cost_this_update += fill_size * fill_px
+
+                if filled_this_update > 0:
+                    self.pending_order['cumulative_filled'] += filled_this_update
+                    self.pending_order['cumulative_cost'] += cost_this_update
+
+                    avg_entry_price = (
+                        self.pending_order['cumulative_cost'] / self.pending_order['cumulative_filled']
+                        if self.pending_order['cumulative_filled'] > 0 else self.pending_order['limit_price']
+                    )
+
+                    self.logger.info(
+                        f"🔍 PARTIAL FILL: {self.pending_order['cumulative_filled']}/{order_size} at avg price {avg_entry_price:.4f}"
+                    )
+
+                    # Create or update position with the cumulative filled size and avg entry price
+                    if not self.current_position:
+                        self.current_position = {
+                            'direction': self.pending_order['direction'],
+                            'entry_price': avg_entry_price,
+                            'stop_loss': self.pending_order['stop_loss'],
+                            'take_profit': self.pending_order['setup'].get('take_profit'),
+                            'size': self.pending_order['cumulative_filled'],
+                            'entry_time': datetime.now(),
+                            'reason': f"Momentum FVG - {self.pending_order['setup']['reason']}",
+                            'leverage': self.pending_order['leverage'],
+                            'order_id': self.pending_order['order_id'],
+                            'strategy_type': 'momentum',
+                            'fvg': self.pending_order.get('fvg', {})
+                        }
+                    else:
+                        self.current_position['size'] = self.pending_order['cumulative_filled']
+                        self.current_position['entry_price'] = avg_entry_price
+
+                    send_telegram_message(
+                        f"✅ PARTIAL FILL: AVAX {self.pending_order['direction'].upper()} "
+                        f"Filled: {self.pending_order['cumulative_filled']:.4f}/{order_size:.4f} "
+                        f"Avg Px: {avg_entry_price:.4f}"
+                    )
+
+                    # Only clear pending_order if fully filled
+                    if self.pending_order['cumulative_filled'] >= order_size - 1e-8:
+                        self.logger.info(f"✅ ORDER FULLY FILLED via Elixir monitor!")
+                        self.start_stop_monitoring()  # <-- Ensure trailing stop is started every time a position is fully filled
+                        self.pending_order = None
+                        return True
+                    else:
+                        self.logger.info(f"⏳ Order still partially filled, will keep monitoring.")
+                        return False
+
             # Check positions for our pending order - only if we have a pending order
             positions = state_data.get('positions', [])
             
@@ -900,7 +826,7 @@ class AVAXLiveTradingBot:
         
         # 5 minute timeout with constant checking
         timeout_seconds = 300  # 5 minutes
-        check_interval = 2   # Check every 0.5 seconds
+        check_interval = 0.5   # Check every 0.5 seconds
         
         self.logger.info(f"🔍 STARTING CONSTANT ALO MONITORING:")
         self.logger.info(f"  Order ID: {order_id}")
@@ -1307,14 +1233,235 @@ class AVAXLiveTradingBot:
             self.position_lock = False
             return False
     
-    def close_live_position(self, reason="manual"):
-        """Close the current live position on Hyperliquid and cancel stop order."""
+    async def close_live_position(self, reason="manual"):
+        """Close the current live position on Hyperliquid using GTC orders."""
         if self.current_position is None:
             self.logger.warning("No position to close")
             return False
         try:
             self.initialize_api_clients()
-            self.logger.info(f"📉 Closing live position for AVAX (INSTANT EXECUTION): {reason}")
+            self.logger.info(f"📉 Closing live position for AVAX (GTC LIMIT ORDER): {reason}")
+            
+            # Get current price for limit order placement
+            current_price = self.client.get_current_price("AVAX")
+            if current_price is None:
+                self.logger.error("Failed to get current price for limit order")
+                return False
+            
+            position = self.current_position
+            direction = position['direction']
+            position_size = position['size']
+            
+            # Determine order side and limit price
+            if direction == 'long':
+                # For long position, we need to sell to close
+                is_buy = False
+                # Place limit order slightly below current price for better fill
+                limit_price = current_price * 0.999  # 0.1% below market
+            else:  # short
+                # For short position, we need to buy to close
+                is_buy = True
+                # Place limit order slightly above current price for better fill
+                limit_price = current_price * 1.001  # 0.1% above market
+            
+            # Round to tick size
+            limit_price = self.round_to_tick(limit_price)
+            
+            self.logger.info(f"Placing GTC limit order to close {direction} position:")
+            self.logger.info(f"  Side: {'BUY' if is_buy else 'SELL'}")
+            self.logger.info(f"  Size: {position_size}")
+            self.logger.info(f"  Limit Price: ${limit_price:.4f}")
+            self.logger.info(f"  Current Price: ${current_price:.4f}")
+            
+            # Use the new GTC close order method
+            order_result = await self.place_gtc_close_order(
+                symbol="AVAX",
+                is_buy=is_buy,
+                size=position_size,
+                limit_price=limit_price
+            )
+            
+            if order_result and 'status' in order_result:
+                # Handle case where GTC order fills immediately
+                if order_result['status'] == 'filled':
+                    # GTC order filled immediately - process the fill
+                    close_price = order_result['fill_price']
+                    close_size = order_result['fill_size']
+                    
+                    # Calculate P&L
+                    entry_price = self.current_position['entry_price']
+                    position_size = self.current_position['size']
+                    direction = self.current_position['direction']
+                    
+                    if direction == 'long':
+                        pnl = (close_price - entry_price) * position_size
+                    else:  # short
+                        pnl = (entry_price - close_price) * position_size
+                    
+                    # Update statistics
+                    self.total_trades += 1
+                    self.total_pnl += pnl
+                    if pnl > 0:
+                        self.winning_trades += 1
+                    
+                    # Record trade
+                    trade_record = {
+                        'entry_time': self.current_position['entry_time'],
+                        'exit_time': datetime.now(),
+                        'direction': direction,
+                        'entry_price': entry_price,
+                        'exit_price': close_price,
+                        'size': position_size,
+                        'pnl': pnl,
+                        'reason': reason
+                    }
+                    self.trade_history.append(trade_record)
+                    
+                    self.logger.info(f"✅ LIVE POSITION CLOSED FOR AVAX (GTC IMMEDIATE FILL):")
+                    self.logger.info(f"  Exit Price: ${close_price:.4f}")
+                    self.logger.info(f"  P&L: ${pnl:.2f}")
+                    self.logger.info(f"  Reason: {reason}")
+                    self.logger.info(f"  Total P&L: ${self.total_pnl:.2f}")
+                    self.logger.info(f"  Win Rate: {(self.winning_trades/self.total_trades)*100:.1f}%")
+                    
+                    # Send Telegram notification
+                    pnl_emoji = "🟢" if pnl > 0 else "🔴"
+                    send_telegram_message(
+                        f"{pnl_emoji} GTC IMMEDIATE CLOSE: AVAX at ${close_price:.4f} | "
+                        f"P&L: ${pnl:.2f} | Reason: {reason} | Total: ${self.total_pnl:.2f}"
+                    )
+                    
+                    # Stop monitoring
+                    self.stop_stop_monitoring()
+                    
+                    # Clear position
+                    self.current_position = None
+                    self.last_position_close_time = datetime.now()
+                    
+                    # Clear order updates file after closing position
+                    self.clear_order_updates_file()
+                    
+                    return True
+                    
+                elif order_result['status'] == 'resting':
+                    # GTC order placed but not filled - monitor for fill
+                    cloid = order_result['cloid']
+                    order_id = order_result['order_id']
+                    
+                    self.logger.info(f"✅ GTC close order placed successfully:")
+                    self.logger.info(f"  Order ID: {order_id}")
+                    self.logger.info(f"  Client Order ID: {cloid}")
+                    self.logger.info(f"  Monitoring for fill...")
+                    
+                    # Monitor the GTC order for fill
+                    max_wait_time = 300  # 5 minutes max wait
+                    check_interval = 2  # Check every 2 seconds
+                    elapsed_time = 0
+                    
+                    while elapsed_time < max_wait_time:
+                        try:
+                            # Check order status
+                            status_result = await self.check_order_status_by_cloid("AVAX", cloid)
+                            
+                            if status_result and 'status' in status_result:
+                                if status_result['status'] == 'filled_via_position':
+                                    # Order was filled - get position data
+                                    pos_data = status_result['position_data']
+                                    close_price = float(pos_data.get("entryPx", limit_price))
+                                    close_size = abs(float(pos_data.get("szi", position_size)))
+                                    
+                                    # Calculate P&L
+                                    entry_price = self.current_position['entry_price']
+                                    position_size = self.current_position['size']
+                                    direction = self.current_position['direction']
+                                    
+                                    if direction == 'long':
+                                        pnl = (close_price - entry_price) * position_size
+                                    else:  # short
+                                        pnl = (entry_price - close_price) * position_size
+                                    
+                                    # Update statistics
+                                    self.total_trades += 1
+                                    self.total_pnl += pnl
+                                    if pnl > 0:
+                                        self.winning_trades += 1
+                                    
+                                    # Record trade
+                                    trade_record = {
+                                        'entry_time': self.current_position['entry_time'],
+                                        'exit_time': datetime.now(),
+                                        'direction': direction,
+                                        'entry_price': entry_price,
+                                        'exit_price': close_price,
+                                        'size': position_size,
+                                        'pnl': pnl,
+                                        'reason': reason
+                                    }
+                                    self.trade_history.append(trade_record)
+                                    
+                                    self.logger.info(f"✅ LIVE POSITION CLOSED FOR AVAX (GTC FILL):")
+                                    self.logger.info(f"  Exit Price: ${close_price:.4f}")
+                                    self.logger.info(f"  P&L: ${pnl:.2f}")
+                                    self.logger.info(f"  Reason: {reason}")
+                                    self.logger.info(f"  Total P&L: ${self.total_pnl:.2f}")
+                                    self.logger.info(f"  Win Rate: {(self.winning_trades/self.total_trades)*100:.1f}%")
+                                    
+                                    # Send Telegram notification
+                                    pnl_emoji = "🟢" if pnl > 0 else "🔴"
+                                    send_telegram_message(
+                                        f"{pnl_emoji} GTC TRADE CLOSED: AVAX at ${close_price:.4f} | "
+                                        f"P&L: ${pnl:.2f} | Reason: {reason} | Total: ${self.total_pnl:.2f}"
+                                    )
+                                    
+                                    # Stop monitoring
+                                    self.stop_stop_monitoring()
+                                    
+                                    # Clear position
+                                    self.current_position = None
+                                    self.last_position_close_time = datetime.now()
+                                    
+                                    # Clear order updates file after closing position
+                                    self.clear_order_updates_file()
+                                    
+                                    return True
+                                
+                                elif status_result['status'] == 'resting':
+                                    # Order is still open, continue monitoring
+                                    self.logger.debug(f"GTC order still open, waiting... (elapsed: {elapsed_time}s)")
+                                
+                                elif status_result['status'] == 'cancelled':
+                                    # Order was cancelled, try market order as fallback
+                                    self.logger.warning("GTC order was cancelled, trying market order fallback")
+                                    return await self.close_with_market_fallback(reason)
+                            
+                            await asyncio.sleep(check_interval)
+                            elapsed_time += check_interval
+
+                        except Exception as e:
+                            self.logger.error(f"Error monitoring GTC order: {e}")
+                            await asyncio.sleep(check_interval)
+                            elapsed_time += check_interval
+                        
+                        # If we reach here, order didn't fill within timeout
+                        self.logger.warning(f"GTC order didn't fill within {max_wait_time}s, trying market order fallback")
+                        return await self.close_with_market_fallback(reason)
+                        
+                    else:
+                        self.logger.error(f"Failed to place GTC close order: {order_result}")
+                        return False
+            else:
+                self.logger.error(f"Failed to place GTC close order: {order_result}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Error closing live position: {e}")
+            return False
+    
+    async def close_with_market_fallback(self, reason="market_fallback"):
+        """Fallback method to close position with market order if GTC fails"""
+        try:
+            self.logger.info(f"📉 Using market order fallback to close position: {reason}")
+            
             # Use market_close for instant execution
             close_result = self.exchange.market_close(
                 coin="AVAX",
@@ -1359,7 +1506,7 @@ class AVAXLiveTradingBot:
                     }
                     self.trade_history.append(trade_record)
                     
-                    self.logger.info(f"✅ LIVE POSITION CLOSED FOR AVAX (INSTANT EXECUTION):")
+                    self.logger.info(f"✅ LIVE POSITION CLOSED FOR AVAX (MARKET FALLBACK):")
                     self.logger.info(f"  Exit Price: ${close_price:.4f}")
                     self.logger.info(f"  P&L: ${pnl:.2f}")
                     self.logger.info(f"  Reason: {reason}")
@@ -1367,9 +1514,9 @@ class AVAXLiveTradingBot:
                     self.logger.info(f"  Win Rate: {(self.winning_trades/self.total_trades)*100:.1f}%")
                     
                     # Send Telegram notification
-                    pnl_emoji = "" if pnl > 0 else "🔴"
+                    pnl_emoji = "🟢" if pnl > 0 else "🔴"
                     send_telegram_message(
-                        f"{pnl_emoji} INSTANT TRADE CLOSED: AVAX at ${close_price:.4f} | "
+                        f"{pnl_emoji} MARKET FALLBACK CLOSED: AVAX at ${close_price:.4f} | "
                         f"P&L: ${pnl:.2f} | Reason: {reason} | Total: ${self.total_pnl:.2f}"
                     )
                     
@@ -1385,18 +1532,29 @@ class AVAXLiveTradingBot:
                     
                     return True
             else:
-                self.logger.error(f"Failed to close position: {close_result}")
+                self.logger.error(f"Failed to close position with market fallback: {close_result}")
                 return False
                 
         except Exception as e:
-            self.logger.error(f"Error closing live position: {e}")
+            self.logger.error(f"Error in market fallback close: {e}")
             return False
     
     def start_stop_monitoring(self):
-        """Start the continuous stop monitoring task"""
-        if self.current_position is not None and not self.stop_monitoring_active:
-            self.stop_monitoring_task = asyncio.create_task(self.monitor_stops_continuously())
-            self.logger.info("Started continuous stop monitoring for AVAX")
+        """Force start the continuous stop monitoring task if in a position."""
+        if self.current_position is not None:
+            # Only start if not already running or if the task is done/crashed
+            if (
+                not getattr(self, "stop_monitoring_task", None)
+                or self.stop_monitoring_task.done()
+                or not getattr(self, "stop_monitoring_active", False)
+            ):
+                self.logger.info("FORCE STARTING continuous stop monitoring for AVAX")
+                self.stop_monitoring_active = True
+                self.stop_monitoring_task = asyncio.create_task(self.monitor_stops_continuously())
+            else:
+                self.logger.debug("Stop monitoring already running.")
+        else:
+            self.logger.debug("No position, not starting stop monitoring.")
     
     def stop_stop_monitoring(self):
         """Stop the continuous stop monitoring task"""
@@ -1422,7 +1580,7 @@ class AVAXLiveTradingBot:
                 
                 if current_price is None:
                     self.logger.debug(f"🔍 MONITOR #{monitor_count}: Failed to get current price")
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(0.5)
                     continue
                 
                 position = self.current_position
@@ -1489,7 +1647,7 @@ class AVAXLiveTradingBot:
                     self.logger.info(f"  Price: ${current_price:.4f} <= FVG Stop: ${position['stop_loss']:.4f}")
                     self.logger.info(f"  Final P&L: ${current_pnl:.4f} | R:R: {rr_ratio:.2f}")
                     send_telegram_message(f"🛑 FVG STOP HIT: AVAX LONG at ${position['stop_loss']:.4f}")
-                    self.close_live_position("FVG Stop Loss Hit")
+                    await self.close_live_position("FVG Stop Loss Hit")
                     self.stop_monitoring_active = False
                     break
                 elif direction == 'short' and current_price >= position['stop_loss']:
@@ -1497,7 +1655,7 @@ class AVAXLiveTradingBot:
                     self.logger.info(f"  Price: ${current_price:.4f} >= FVG Stop: ${position['stop_loss']:.4f}")
                     self.logger.info(f"  Final P&L: ${current_pnl:.4f} | R:R: {rr_ratio:.2f}")
                     send_telegram_message(f"🛑 FVG STOP HIT: AVAX SHORT at ${position['stop_loss']:.4f}")
-                    self.close_live_position("FVG Stop Loss Hit")
+                    await self.close_live_position("FVG Stop Loss Hit")
                     self.stop_monitoring_active = False
                     break
                 
@@ -1526,7 +1684,7 @@ class AVAXLiveTradingBot:
                 
                 try:
                     # DEBUG: Log every cycle for visibility
-                    if cycle_count % 6 == 0:  # Every 60 seconds (6 cycles * 10.0s)
+                    if cycle_count % 20 == 0:  # Every 10 seconds (20 cycles * 0.5s)
                         self.logger.info(f"🔄 TRADING CYCLE #{cycle_count} - Searching for AVAX setups...")
                     
                     # Check if we're in a position OR have a pending order
@@ -1537,7 +1695,7 @@ class AVAXLiveTradingBot:
                         if self.pending_order:
                             self.logger.info(f"⏳ AVAX has pending ALO order: {self.pending_order['direction']} @ ${self.pending_order['limit_price']:.2f}")
                         
-                        await asyncio.sleep(10.0)
+                        await asyncio.sleep(0.5)
                         continue
                     
                     # Check cooldown period (5 minutes instead of 1 minute)
@@ -1549,7 +1707,7 @@ class AVAXLiveTradingBot:
                     if cooldown_remaining and cooldown_remaining > 0:
                         self.logger.info(f"⏳ COOLDOWN ACTIVE for AVAX: {cooldown_remaining:.0f}s remaining")
                         candle_idx += 1
-                        await asyncio.sleep(10.0)
+                        await asyncio.sleep(0.5)
                         continue
                     
                     # Only check Elixir monitor if we have a pending order
@@ -1563,7 +1721,7 @@ class AVAXLiveTradingBot:
                                 self.logger.info(f"✅ ELIXIR UPDATE PROCESSED SUCCESSFULLY!")
                     
                     # MAIN LOOP: No position, no pending order, no cooldown - SEARCHING FOR TRADES
-                    if cycle_count % 3 == 0:  # Log every 30 seconds (3 cycles * 10.0s)
+                    if cycle_count % 10 == 0:  # Log every 10 cycles when searching
                         self.logger.info(f"🔍 MAIN LOOP: Searching for AVAX trade setups... (Cycle #{cycle_count})")
                     
                     # Fetch live data for AVAX
@@ -1588,11 +1746,11 @@ class AVAXLiveTradingBot:
                                     self.logger.info(f"✅ SUCCESSFULLY opened position for AVAX")
                     
                     candle_idx += 1
-                    await asyncio.sleep(10.0)  # Search for new positions every 10 seconds
+                    await asyncio.sleep(0.5)  # Changed from 10s to 0.5s for faster response
                     
                 except Exception as e:
                     self.logger.error(f"Error in live trading cycle: {e}")
-                    await asyncio.sleep(10.0)
+                    await asyncio.sleep(0.5)
                     
         except KeyboardInterrupt:
             self.logger.info("🛑 AVAX live trading stopped by user (Ctrl+C)")
@@ -1600,7 +1758,7 @@ class AVAXLiveTradingBot:
         if self.current_position is not None:
             current_price = self.client.get_current_price("AVAX")
             if current_price:
-                self.close_live_position("Session End")
+                await self.close_live_position("Session End")
         
         self.client.close()
 
@@ -1658,6 +1816,90 @@ class AVAXLiveTradingBot:
             self.logger.error(f"Error checking for existing position: {e}")
             return False
 
+    # Add this new method for GTC closing orders
+    async def place_gtc_close_order(self, symbol, is_buy, size, limit_price):
+        """Place a GTC limit order specifically for closing positions"""
+        try:
+            # Initialize API clients if needed
+            self.initialize_api_clients()
+            
+            self.logger.info(f"📋 Placing GTC CLOSE ORDER: {symbol} {'BUY' if is_buy else 'SELL'} {size} @ ${limit_price:.4f}")
+            
+            # Generate a unique client order ID (128 bit hex string)
+            import secrets
+            cloid = "0x" + secrets.token_hex(16)  # 16 bytes = 128 bits
+            
+            self.logger.info(f"📋 Generated Client Order ID: {cloid}")
+            
+            # DEBUG: Let's see what the current market price is
+            current_price = self.client.get_current_price(symbol)
+            self.logger.info(f"📋 Current market price: ${current_price:.4f}")
+            self.logger.info(f"📋 GTC Limit price: ${limit_price:.4f}")
+            
+            # Use the official SDK order method with GTC time-in-force
+            order_result = self.exchange.order(
+                symbol, 
+                is_buy, 
+                size, 
+                limit_price, 
+                {"limit": {"tif": "Gtc"}, "cloid": cloid}  # Use GTC time-in-force
+            )
+            
+            self.logger.info(f"📋 GTC CLOSE ORDER RESULT: {order_result}")
+            
+            # Check if order was rejected immediately
+            if order_result and order_result["status"] == "ok":
+                status = order_result["response"]["data"]["statuses"][0]
+                
+                if "filled" in status:
+                    # Order was filled immediately
+                    filled_data = status["filled"]
+                    fill_price = float(filled_data.get("avgPx", limit_price))
+                    fill_size = float(filled_data.get("totalSz", size))
+                    order_id = filled_data.get("oid")
+                    
+                    self.logger.info(f"✅ GTC CLOSE ORDER FILLED IMMEDIATELY!")
+                    self.logger.info(f"  Fill Price: ${fill_price:.4f}")
+                    self.logger.info(f"  Fill Size: {fill_size}")
+                    self.logger.info(f"  Client Order ID: {cloid}")
+                    
+                    return {
+                        'status': 'filled',
+                        'order_id': order_id,
+                        'cloid': cloid,
+                        'fill_price': fill_price,
+                        'fill_size': fill_size
+                    }
+                elif "resting" in status:
+                    # Order placed but not filled (resting)
+                    order_id = status["resting"]["oid"]
+                    
+                    self.logger.info(f"⏳ GTC CLOSE ORDER PLACED BUT NOT FILLED (RESTING)")
+                    self.logger.info(f"  Order ID: {order_id}")
+                    self.logger.info(f"  Client Order ID: {cloid}")
+                    
+                    return {
+                        'status': 'resting',
+                        'order_id': order_id,
+                        'cloid': cloid,
+                        'limit_price': limit_price,
+                        'size': size
+                    }
+                elif "cancelled" in status:
+                    # Order was cancelled immediately
+                    self.logger.warning(f"⚠️ GTC CLOSE ORDER CANCELLED IMMEDIATELY (rejected)")
+                    return {
+                        'status': 'rejected',
+                        'cloid': cloid,
+                        'reason': 'GTC order would have matched immediately'
+                    }
+            else:
+                self.logger.error(f"❌ GTC CLOSE ORDER FAILED: {order_result}")
+                return {'status': 'failed', 'error': order_result}
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error placing GTC close order: {e}")
+            return {'status': 'error', 'error': str(e)}
 
 
 async def main():
