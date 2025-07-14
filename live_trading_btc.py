@@ -24,7 +24,16 @@ class BTCLiveTradingBot:
             'STOP_LOSS_BUFFER': STOP_LOSS_BUFFER,
             'TAKE_PROFIT_RATIO': TAKE_PROFIT_RATIO,
             'RISK_PER_TRADE': RISK_PER_TRADE,
-            'MAX_LEVERAGE': MAX_LEVERAGE
+            'MAX_LEVERAGE': MAX_LEVERAGE,
+            # MATCH BACKTEST: Add these configs
+            'TRAILING_STOP': True,
+            'MIN_VOLUME': 1000,
+            'MIN_FVG_SIZE': 0.5,
+            'MAX_FVG_SIZE': 5.0,
+            'FVG_TIMEOUT': 100,
+            'MSS_CONFIRMATION': 3,
+            'BOS_CONFIRMATION': 2,
+            'TRAILING_CONFIRMATION_CANDLES': TRAILING_CONFIRMATION_CANDLES
         }
         
         # Setup logging FIRST (before any API calls)
@@ -132,9 +141,6 @@ class BTCLiveTradingBot:
         try:
             self.logger.info(f"Fetching live data for BTC...")
             
-            # Add delay to prevent rate limiting
-            await asyncio.sleep(2)
-            
             # Fetch LTF data (1m) - increase to 1000 candles
             ltf_data = await self.client.get_ohlcv(
                 symbol="BTC",
@@ -142,18 +148,12 @@ class BTCLiveTradingBot:
                 limit=500
             )
             
-            # Add delay between API calls
-            await asyncio.sleep(2)
-            
             # Fetch HTF data (15m) - reduced to 192 candles
             htf_data = await self.client.get_ohlcv(
                 symbol="BTC",
                 timeframe=self.config['HTF_TIMEFRAME'],
                 limit=100  # 2 days of 15m candles
             )
-            
-            # Add delay between API calls
-            await asyncio.sleep(2)
             
             # Get current price
             current_price = self.client.get_current_price("BTC")
@@ -170,53 +170,37 @@ class BTCLiveTradingBot:
     
     def calculate_position_size(self, entry_price, stop_loss, direction):
         """Calculate position size based on risk management rules with capital and leverage constraints"""
-        # BTC-specific: Ensure minimum 3-cent stop loss distance
-        min_stop_distance = 0.03  # 3 cents minimum
+        # KEEP LIVE TRADING: Use $1 fixed risk
+        target_risk = 1  # $1 fixed risk (keep live trading amount)
         
+        # LIVE TRADING CONSTRAINT: Ensure minimum stop loss distance as 0.15% of current price
+        min_stop_distance = entry_price * 0.0015  # 0.15% of entry price
+        
+        # Check if strategy stop loss meets minimum distance requirement
         if direction == 'long':
             current_stop_distance = entry_price - stop_loss
             if current_stop_distance < min_stop_distance:
                 stop_loss = entry_price - min_stop_distance
-                self.logger.info(f"BTC: Stop loss adjusted to minimum 3-cent distance: ${stop_loss:.4f}")
+                self.logger.info(f"BTC: Strategy stop loss adjusted to minimum 0.15% distance: ${stop_loss:.4f} ({min_stop_distance*100:.4f}%)")
         else:  # short
             current_stop_distance = stop_loss - entry_price
             if current_stop_distance < min_stop_distance:
                 stop_loss = entry_price + min_stop_distance
-                self.logger.info(f"BTC: Stop loss adjusted to minimum 3-cent distance: ${stop_loss:.4f}")
-        
-        # FIXED: Use $10 fixed risk as originally requested
-        target_risk = 1  # $10 fixed risk (as you wanted)
+                self.logger.info(f"BTC: Strategy stop loss adjusted to minimum 0.15% distance: ${stop_loss:.4f} ({min_stop_distance*100:.4f}%)")
         
         # Position size = Target Risk / Price Risk per Unit
-        # This guarantees we risk exactly $10
+        # This guarantees we risk exactly $1
         risk_amount = abs(entry_price - stop_loss)
         position_size = target_risk / risk_amount
-        
-        # ROUND THE POSITION SIZE to avoid float precision issues
-        position_size = round(position_size, 2)  # Round to 2 decimal places for Hyperliquid
-        
-        # Check minimum order size for Hyperliquid (usually 0.01)
-        min_order_size = 0.01
-        if position_size < min_order_size:
-            position_size = min_order_size
-            self.logger.warning(f"Position size too small, using minimum: {min_order_size}")
         
         # Calculate position value (size × entry price)
         position_value = position_size * entry_price
         
-        # Get leverage for BTC
-        leverage = self.config['MAX_LEVERAGE'].get("BTC", 10)  # Use 10x for BTC
+        # MATCH BACKTEST: Use 20x leverage (not 10x)
+        leverage = self.config['MAX_LEVERAGE'].get("BTC", 20)  # Use 20x like backtest
         
         # Capital constraints: $10,000 capital with leverage = max position value
-        max_position_value = 10000 * leverage
-        
-        self.logger.info(f"DEBUG: Position calculation for BTC:")
-        self.logger.info(f"  Entry: ${entry_price:.4f}, Stop: ${stop_loss:.4f}")
-        self.logger.info(f"  Risk amount: ${risk_amount:.4f}")
-        self.logger.info(f"  Position size: {position_size:.2f}")
-        self.logger.info(f"  Position value: ${position_value:.2f}")
-        self.logger.info(f"  Leverage: {leverage}x")
-        self.logger.info(f"  Max position value: ${max_position_value:.2f}")
+        max_position_value = 10000 * leverage  # Dynamic based on symbol leverage
         
         # Check if position value exceeds maximum allowed
         if position_value > max_position_value:
@@ -235,9 +219,6 @@ class BTCLiveTradingBot:
             # Recalculate position size with new stop
             new_risk_amount = abs(entry_price - new_stop)
             position_size = target_risk / new_risk_amount
-            position_size = round(position_size, 2)  # Round to 2 decimal places
-            if position_size < min_order_size:
-                position_size = min_order_size
             position_value = position_size * entry_price
             
             # Check if this fits within capital constraints
@@ -247,12 +228,18 @@ class BTCLiveTradingBot:
             else:
                 # If still too large, scale down position size as last resort
                 position_size = max_position_value / entry_price
-                position_size = round(position_size, 2)  # Round to 2 decimal places
-                if position_size < min_order_size:
-                    position_size = min_order_size
                 actual_risk = position_size * new_risk_amount
-                self.logger.warning(f"Position size reduced due to capital constraints. Risk: ${actual_risk:.2f} instead of $10")
+                self.logger.warning(f"Position size reduced due to capital constraints. Risk: ${actual_risk:.2f} instead of $1")
                 return position_size, new_stop
+        
+        # LIVE TRADING CONSTRAINT: Round position size for Hyperliquid
+        position_size = round(position_size, 2)  # Round to 2 decimal places for Hyperliquid
+        
+        # LIVE TRADING CONSTRAINT: Check minimum order size
+        min_order_size = 0.01
+        if position_size < min_order_size:
+            position_size = min_order_size
+            self.logger.warning(f"Position size too small, using minimum: {min_order_size}")
         
         return position_size, stop_loss
     
@@ -302,161 +289,96 @@ class BTCLiveTradingBot:
             if not self.pending_order:
                 self.logger.debug(f"No pending order to check")
                 return False
-            
-            # Check fills for our pending order - only recent ones
+
+            # Track cumulative filled size and cost for this order
+            if 'cumulative_filled' not in self.pending_order:
+                self.pending_order['cumulative_filled'] = 0.0
+            if 'cumulative_cost' not in self.pending_order:
+                self.pending_order['cumulative_cost'] = 0.0
+
             fills = state_data.get('fills', [])
-            
-            # Ensure fills is a list, not a string
             if isinstance(fills, str):
                 self.logger.warning(f"Fills is a string, not a list: {fills}")
                 fills = []
             elif not isinstance(fills, list):
                 self.logger.warning(f"Fills is not a list: {type(fills)}")
                 fills = []
-                
+
+            order_time = self.pending_order.get('order_time')
+            order_size = float(self.pending_order.get('size', 0))
+            order_timestamp_ms = int(order_time.timestamp() * 1000) if order_time else 0
+
+            filled_this_update = 0.0
+            cost_this_update = 0.0
+
             if fills and self.pending_order:
-                # Only check fills that are newer than when our pending order was placed
-                order_time = self.pending_order.get('order_time')
-                if order_time:
-                    # Filter fills to only those newer than our order
-                    # Convert order_time to milliseconds timestamp for comparison
-                    order_timestamp_ms = int(order_time.timestamp() * 1000)
-                    recent_fills = []
-                    for fill in fills:
-                        fill_time = fill.get('time')  # This is milliseconds timestamp
-                        if fill_time and isinstance(fill_time, (int, float)) and fill_time > order_timestamp_ms:
-                            recent_fills.append(fill)
-                    
-                    self.logger.info(f"🔍 Checking {len(recent_fills)} recent fills (newer than order)")
-                    
-                    for fill in recent_fills:
-                        # Check if this fill matches our pending order
-                        fill_oid = fill.get('oid')
-                        fill_coin = fill.get('coin')
-                        
-                        if fill_coin == 'BTC' and fill_oid:
-                            # Check if this fill matches our pending order by either order ID
-                            pending_regular_id = self.pending_order.get('regular_order_id')
-                            pending_client_id = self.pending_order.get('order_id')  # This is the client order ID
-                            
-                            # Convert to same type for comparison
-                            if isinstance(fill_oid, str):
-                                fill_oid_int = int(fill_oid) if fill_oid.isdigit() else fill_oid
-                            else:
-                                fill_oid_int = fill_oid
-                            
-                            if isinstance(pending_regular_id, str):
-                                pending_regular_id_int = int(pending_regular_id) if pending_regular_id.isdigit() else pending_regular_id
-                            else:
-                                pending_regular_id_int = pending_regular_id
-                            
-                            # Check if this fill matches our order
-                            if (pending_regular_id_int == fill_oid_int or 
-                                pending_client_id == fill_oid_int):
-                                self.logger.info(f"🔍 POTENTIAL MATCH: BTC fill OID {fill_oid}")
-                                self.logger.info(f"   Pending Regular ID: {pending_regular_id_int}")
-                                self.logger.info(f"   Pending Client ID: {pending_client_id}")
-                                self.logger.info(f"   Fill OID: {fill_oid_int}")
-                                
-                                # This is our order - process it
-                                self.logger.info(f"✅ ORDER FILLED via Elixir monitor!")
-                                
-                                # Create position from fill data
-                                fill_price = float(fill.get('px', self.pending_order['limit_price']))
-                                fill_size = float(fill.get('sz', self.pending_order['size']))
-                                
-                                self.current_position = {
-                                    'direction': self.pending_order['direction'],
-                                    'entry_price': fill_price,
-                                    'stop_loss': self.pending_order['stop_loss'],
-                                    'take_profit': self.pending_order['setup'].get('take_profit'),
-                                    'size': fill_size,
-                                    'entry_time': datetime.now(),
-                                    'reason': f"Momentum FVG - {self.pending_order['setup']['reason']}",
-                                    'leverage': self.pending_order['leverage'],
-                                    'order_id': self.pending_order['order_id'],
-                                    'strategy_type': 'momentum',
-                                    'fvg': self.pending_order.get('fvg', {})
-                                }
-                                
-                                # Send Telegram notification
-                                send_telegram_message(
-                                    f"✅ MOMENTUM ALO FILLED: BTC {self.pending_order['direction'].upper()} at ${fill_price:.4f} | "
-                                    f"FVG Stop: ${self.current_position['stop_loss']:.4f} | Size: {fill_size:.4f}"
-                                )
-                                
-                                # Start stop monitoring
-                                self.start_stop_monitoring()
-                                
-                                # Clear pending order
-                                self.pending_order = None
-                                return True
-                else:
-                    # Fallback: check all fills if we don't have order time
-                    self.logger.info(f"🔍 Checking {len(fills)} fills (no order time available)")
-                    
-                    for fill in fills:
-                        fill_oid = fill.get('oid')
-                        fill_coin = fill.get('coin')
-                        
-                        if fill_coin == 'BTC' and fill_oid:
-                            # Check if this fill matches our pending order by either order ID
-                            pending_regular_id = self.pending_order.get('regular_order_id')
-                            pending_client_id = self.pending_order.get('order_id')  # This is the client order ID
-                            
-                            # Convert to same type for comparison
-                            if isinstance(fill_oid, str):
-                                fill_oid_int = int(fill_oid) if fill_oid.isdigit() else fill_oid
-                            else:
-                                fill_oid_int = fill_oid
-                            
-                            if isinstance(pending_regular_id, str):
-                                pending_regular_id_int = int(pending_regular_id) if pending_regular_id.isdigit() else pending_regular_id
-                            else:
-                                pending_regular_id_int = pending_regular_id
-                            
-                            # Check if this fill matches our order
-                            if (pending_regular_id_int == fill_oid_int or 
-                                pending_client_id == fill_oid_int):
-                                self.logger.info(f"🔍 POTENTIAL MATCH: BTC fill OID {fill_oid}")
-                                self.logger.info(f"   Pending Regular ID: {pending_regular_id_int}")
-                                self.logger.info(f"   Pending Client ID: {pending_client_id}")
-                                self.logger.info(f"   Fill OID: {fill_oid_int}")
-                                
-                                # This is our order - process it
-                                self.logger.info(f"✅ ORDER FILLED via Elixir monitor!")
-                                
-                                # Create position from fill data
-                                fill_price = float(fill.get('px', self.pending_order['limit_price']))
-                                fill_size = float(fill.get('sz', self.pending_order['size']))
-                                
-                                self.current_position = {
-                                    'direction': self.pending_order['direction'],
-                                    'entry_price': fill_price,
-                                    'stop_loss': self.pending_order['stop_loss'],
-                                    'take_profit': self.pending_order['setup'].get('take_profit'),
-                                    'size': fill_size,
-                                    'entry_time': datetime.now(),
-                                    'reason': f"Momentum FVG - {self.pending_order['setup']['reason']}",
-                                    'leverage': self.pending_order['leverage'],
-                                    'order_id': self.pending_order['order_id'],
-                                    'strategy_type': 'momentum',
-                                    'fvg': self.pending_order.get('fvg', {})
-                                }
-                                
-                                # Send Telegram notification
-                                send_telegram_message(
-                                    f"✅ MOMENTUM ALO FILLED: BTC {self.pending_order['direction'].upper()} at ${fill_price:.4f} | "
-                                    f"FVG Stop: ${self.current_position['stop_loss']:.4f} | Size: {fill_size:.4f}"
-                                )
-                                
-                                # Start stop monitoring
-                                self.start_stop_monitoring()
-                                
-                                # Clear pending order
-                                self.pending_order = None
-                                return True
-            
+                for fill in fills:
+                    fill_time = fill.get('time')
+                    fill_coin = fill.get('coin')
+                    fill_oid = fill.get('oid')
+                    fill_size = float(fill.get('sz', 0))
+                    fill_px = float(fill.get('px', self.pending_order['limit_price']))
+                    if (
+                        fill_time and isinstance(fill_time, (int, float)) and fill_time > order_timestamp_ms
+                        and fill_coin == 'BTC'
+                    ):
+                        pending_regular_id = self.pending_order.get('regular_order_id')
+                        pending_client_id = self.pending_order.get('order_id')
+                        if (
+                            str(fill_oid) == str(pending_regular_id)
+                            or str(fill_oid) == str(pending_client_id)
+                        ):
+                            filled_this_update += fill_size
+                            cost_this_update += fill_size * fill_px
+
+                if filled_this_update > 0:
+                    self.pending_order['cumulative_filled'] += filled_this_update
+                    self.pending_order['cumulative_cost'] += cost_this_update
+
+                    avg_entry_price = (
+                        self.pending_order['cumulative_cost'] / self.pending_order['cumulative_filled']
+                        if self.pending_order['cumulative_filled'] > 0 else self.pending_order['limit_price']
+                    )
+
+                    self.logger.info(
+                        f"🔍 PARTIAL FILL: {self.pending_order['cumulative_filled']}/{order_size} at avg price {avg_entry_price:.4f}"
+                    )
+
+                    # Create or update position with the cumulative filled size and avg entry price
+                    if not self.current_position:
+                        self.current_position = {
+                            'direction': self.pending_order['direction'],
+                            'entry_price': avg_entry_price,
+                            'stop_loss': self.pending_order['stop_loss'],
+                            'take_profit': self.pending_order['setup'].get('take_profit'),
+                            'size': self.pending_order['cumulative_filled'],
+                            'entry_time': datetime.now(),
+                            'reason': f"Momentum FVG - {self.pending_order['setup']['reason']}",
+                            'leverage': self.pending_order['leverage'],
+                            'order_id': self.pending_order['order_id'],
+                            'strategy_type': 'momentum',
+                            'fvg': self.pending_order.get('fvg', {})
+                        }
+                    else:
+                        self.current_position['size'] = self.pending_order['cumulative_filled']
+                        self.current_position['entry_price'] = avg_entry_price
+
+                    send_telegram_message(
+                        f"✅ PARTIAL FILL: BTC {self.pending_order['direction'].upper()} "
+                        f"Filled: {self.pending_order['cumulative_filled']:.4f}/{order_size:.4f} "
+                        f"Avg Px: {avg_entry_price:.4f}"
+                    )
+
+                    # Only clear pending_order if fully filled
+                    if self.pending_order['cumulative_filled'] >= order_size - 1e-8:
+                        self.logger.info(f"✅ ORDER FULLY FILLED via Elixir monitor!")
+                        self.start_stop_monitoring()  # <-- Ensure trailing stop is started every time a position is fully filled
+                        self.pending_order = None
+                        return True
+                    else:
+                        self.logger.info(f"⏳ Order still partially filled, will keep monitoring.")
+                        return False
+
             # Check positions for our pending order - only if we have a pending order
             positions = state_data.get('positions', [])
             
@@ -900,7 +822,7 @@ class BTCLiveTradingBot:
         
         # 5 minute timeout with constant checking
         timeout_seconds = 300  # 5 minutes
-        check_interval = 2   # Check every 0.5 seconds
+        check_interval = 0.5   # Check every 0.5 seconds
         
         self.logger.info(f"🔍 STARTING CONSTANT ALO MONITORING:")
         self.logger.info(f"  Order ID: {order_id}")
@@ -1147,7 +1069,7 @@ class BTCLiveTradingBot:
         self.pending_order = None
 
     async def open_live_position(self, setup, current_price):
-        """Open a live trading position using INVERTED ALO limit orders for momentum"""
+        """Open a live trading position using strategy-based stop loss (like backtest)"""
         if self.current_position is not None or self.position_lock:
             self.logger.warning(f"Already in a position for BTC or position lock active, cannot open new one")
             return False
@@ -1158,68 +1080,38 @@ class BTCLiveTradingBot:
             
             self.logger.info(f"DEBUG: Opening live position for BTC with setup: {setup}")
             
-            # MOMENTUM APPROACH: Stop placement based on FVG
-            # For LONG: Stop right below the FVG bottom
-            # For SHORT: Stop right above the FVG top
+            # MATCH BACKTEST: Use strategy-based stop loss (not FVG-based)
+            stop_loss = setup['stop_loss']  # Use the stop loss from strategy setup
             
-            if setup['direction'] == 'long':
-                # LONG: Stop below FVG bottom (if price goes through FVG, plan failed)
-                fvg_bottom = setup['fvg']['bottom']
-                stop_loss = fvg_bottom - self.config.get('STOP_LOSS_BUFFER', 0.005)
-                self.logger.info(f"📈 MOMENTUM LONG: Stop below FVG bottom")
-                self.logger.info(f"  FVG Bottom: ${fvg_bottom:.4f}")
-                self.logger.info(f"  Stop Loss: ${stop_loss:.4f}")
-            else:
-                # SHORT: Stop above FVG top (if price goes through FVG, plan failed)
-                fvg_top = setup['fvg']['top']
-                stop_loss = fvg_top + self.config.get('STOP_LOSS_BUFFER', 0.005)
-                self.logger.info(f"📉 MOMENTUM SHORT: Stop above FVG top")
-                self.logger.info(f"  FVG Top: ${fvg_top:.4f}")
-                self.logger.info(f"  Stop Loss: ${stop_loss:.4f}")
-            
-            # Calculate position size with the FVG-based stop
+            # Calculate position size with the strategy-based stop
             position_size, adjusted_stop = self.calculate_position_size(setup['entry_price'], stop_loss, setup['direction'])
             
-            # Use adjusted stop if it was changed (respects minimum size rule)
+            # Use adjusted stop if it was changed (respects capital constraints)
             final_stop = adjusted_stop if adjusted_stop != stop_loss else stop_loss
             
-            # Get leverage for BTC
-            leverage = self.config['MAX_LEVERAGE'].get("BTC", 10)
+            # MATCH BACKTEST: Use 20x leverage
+            leverage = self.config['MAX_LEVERAGE'].get("BTC", 20)  # Use 20x like backtest
             
-            # Place the actual order on Hyperliquid using INVERTED ALO limit order
+            # Place the actual order on Hyperliquid using ALO limit order
             is_buy = setup['direction'] == 'long'
             
-            # INVERTED ALO limit price - FOLLOWING MOMENTUM
-            # For LONG: Place limit order ABOVE current price (follows momentum up)
-            # For SHORT: Place limit order BELOW current price (follows momentum down)
+            # LIVE TRADING CONSTRAINT: Use ALO limit order for fee efficiency
+            # Place limit order at strategy entry price (not inverted)
+            limit_price = setup['entry_price']
             
-            if is_buy:
-                # LONG: Place limit buy BELOW current price for ALO (subtract buffer)
-                # Use FVG entry target as base, with 0.05 cent buffer BELOW for ALO
-                limit_price = setup['entry_price'] - 0.0005  # 0.05 cents BELOW FVG entry
-                self.logger.info(f"📈 MOMENTUM LONG SETUP: Placing ALO limit buy BELOW FVG entry")
-                self.logger.info(f"  FVG Entry Target: ${setup['entry_price']:.4f}")
-                self.logger.info(f"  ALO Limit Price: ${limit_price:.4f} (0.05 cents BELOW FVG)")
-            else:
-                # SHORT: Place limit sell ABOVE current price for ALO (add buffer)
-                # Use FVG entry target as base, with 0.05 cent buffer ABOVE for ALO
-                limit_price = setup['entry_price'] + 0.0005  # 0.05 cents ABOVE FVG entry
-                self.logger.info(f"📉 MOMENTUM SHORT SETUP: Placing ALO limit sell ABOVE FVG entry")
-                self.logger.info(f"  ALO Limit Price: ${limit_price:.4f} (0.05 cents ABOVE FVG)")
+            # Round to tick size for Hyperliquid
+            limit_price = self.round_to_tick(limit_price)
             
-            # Round to 3 decimal places
-            limit_price = round(limit_price, 3)
-            
-            self.logger.info(f"📈 Opening MOMENTUM position for BTC (INVERTED ALO LIMIT ORDER):")
+            self.logger.info(f"📈 Opening position for BTC (ALO LIMIT ORDER):")
             self.logger.info(f"  Direction: {setup['direction'].upper()}")
-            self.logger.info(f"  INVERTED ALO Limit Price: ${limit_price:.4f}")
+            self.logger.info(f"  ALO Limit Price: ${limit_price:.4f}")
             self.logger.info(f"  Current Market: ${current_price:.4f}")
-            self.logger.info(f"  FVG Entry Target: ${setup['entry_price']:.4f}")
-            self.logger.info(f"  FVG-Based Stop: ${final_stop:.4f}")
+            self.logger.info(f"  Strategy Entry Target: ${setup['entry_price']:.4f}")
+            self.logger.info(f"  Strategy-Based Stop: ${final_stop:.4f}")
             self.logger.info(f"  Size: {position_size:.4f}")
-            self.logger.info(f"  Risk: $10")
+            self.logger.info(f"  Risk: $1")  # Keep live trading amount
             self.logger.info(f"  Leverage: {leverage}x")
-            self.logger.info(f"  Order Type: INVERTED ALO (Momentum Following)")
+            self.logger.info(f"  Order Type: ALO (Fee Efficient)")
             
             order_result = await self.place_limit_order("BTC", is_buy, position_size, limit_price, "Alo")
             
@@ -1227,7 +1119,7 @@ class BTCLiveTradingBot:
                 self.add_order_to_elixir_monitor(order_result, setup, final_stop)
                 
             if order_result['status'] == 'filled':
-                # Order was filled immediately (more likely with momentum approach)
+                # Order was filled immediately
                 self.current_position = {
                     'direction': setup['direction'],
                     'entry_price': order_result['fill_price'],
@@ -1235,22 +1127,24 @@ class BTCLiveTradingBot:
                     'take_profit': setup.get('take_profit'),
                     'size': order_result['fill_size'],
                     'entry_time': datetime.now(),
-                    'reason': f"Momentum FVG - {setup['reason']}",
+                    'reason': f"Strategy FVG - {setup['reason']}",  # Match backtest naming
                     'leverage': leverage,
                     'order_id': order_result['order_id'],
-                    'strategy_type': 'momentum',  # Mark as momentum strategy
-                    'fvg': setup['fvg']  # Store FVG info for reference
+                    'strategy_type': 'strategy',  # Mark as strategy-based (not momentum)
+                    'fvg': setup['fvg'],  # Store FVG info for reference
+                    'entry_fee': 0.10  # ADD ENTRY FEE: $0.10
                 }
                 
-                self.logger.info(f"✅ INVERTED ALO ORDER FILLED IMMEDIATELY:")
+                self.logger.info(f"✅ ALO ORDER FILLED IMMEDIATELY:")
                 self.logger.info(f"  Actual Entry: ${order_result['fill_price']:.4f}")
                 self.logger.info(f"  Actual Size: {order_result['fill_size']:.4f}")
-                self.logger.info(f"  FVG-Based Stop: ${final_stop:.4f}")
+                self.logger.info(f"  Strategy-Based Stop: ${final_stop:.4f}")
+                self.logger.info(f"  Entry Fee: $0.10")
                 
                 # Send Telegram notification
                 send_telegram_message(
-                    f"✅ MOMENTUM ALO FILLED: BTC {setup['direction'].upper()} at ${order_result['fill_price']:.4f} | "
-                    f"FVG Stop: ${final_stop:.4f} | Size: {order_result['fill_size']:.4f} | Risk: $10"
+                    f"✅ ALO FILLED: BTC {setup['direction'].upper()} at ${order_result['fill_price']:.4f} | "
+                    f"Strategy Stop: ${final_stop:.4f} | Size: {order_result['fill_size']:.4f} | Risk: $1 | Entry Fee: $0.10"
                 )
                 
                 # Start stop monitoring
@@ -1261,10 +1155,9 @@ class BTCLiveTradingBot:
                 
             elif order_result['status'] == 'resting':
                 # Order placed but not filled - this is expected with ALO
-                # FIXED: Store the CLIENT ORDER ID for monitoring, not the regular order ID
                 self.pending_order = {
-                    'order_id': order_result['cloid'],  # Store client order ID for monitoring
-                    'regular_order_id': order_result['order_id'],  # Store regular order ID as backup
+                    'order_id': order_result['cloid'],
+                    'regular_order_id': order_result['order_id'],
                     'symbol': 'BTC',
                     'direction': setup['direction'],
                     'limit_price': limit_price,
@@ -1273,22 +1166,23 @@ class BTCLiveTradingBot:
                     'setup': setup,
                     'leverage': leverage,
                     'order_time': datetime.now(),
-                    'order_type': 'INVERTED_ALO',
-                    'strategy_type': 'momentum',
-                    'fvg': setup['fvg']  # Store FVG info for reference
+                    'order_type': 'ALO',
+                    'strategy_type': 'strategy',  # Mark as strategy-based
+                    'fvg': setup['fvg'],
+                    'entry_fee': 0.10  # ADD ENTRY FEE: $0.10
                 }
                 
-                self.logger.info(f"⏳ INVERTED ALO LIMIT ORDER PLACED (RESTING):")
+                self.logger.info(f"⏳ ALO LIMIT ORDER PLACED (RESTING):")
                 self.logger.info(f"  Client Order ID: {order_result['cloid']}")
                 self.logger.info(f"  Regular Order ID: {order_result['order_id']}")
-                self.logger.info(f"  Waiting for momentum continuation to ${limit_price:.4f}")
-                self.logger.info(f"  FVG-Based Stop: ${final_stop:.4f}")
-                self.logger.info(f"  Will monitor for fill or cancel after timeout")
+                self.logger.info(f"  Waiting for fill at ${limit_price:.4f}")
+                self.logger.info(f"  Strategy-Based Stop: ${final_stop:.4f}")
+                self.logger.info(f"  Entry Fee: $0.10")
                 
                 # Send Telegram notification
                 send_telegram_message(
-                    f"⏳ MOMENTUM ALO PLACED: BTC {setup['direction'].upper()} @ ${limit_price:.4f} | "
-                    f"FVG Stop: ${final_stop:.4f} | Waiting for momentum"
+                    f"⏳ ALO PLACED: BTC {setup['direction'].upper()} @ ${limit_price:.4f} | "
+                    f"Strategy Stop: ${final_stop:.4f} | Waiting for fill | Entry Fee: $0.10"
                 )
                 
                 # Start monitoring the pending order
@@ -1298,23 +1192,266 @@ class BTCLiveTradingBot:
                 return True
                 
             else:
-                self.logger.error(f"❌ FAILED to place inverted ALO limit order: {order_result}")
+                self.logger.error(f"❌ FAILED to place ALO limit order: {order_result}")
                 self.position_lock = False
                 return False
                 
         except Exception as e:
-            self.logger.error(f"Error opening momentum position: {e}")
+            self.logger.error(f"Error opening strategy position: {e}")
             self.position_lock = False
             return False
     
-    def close_live_position(self, reason="manual"):
-        """Close the current live position on Hyperliquid and cancel stop order."""
+    async def close_live_position(self, reason="manual"):
+        """Close the current live position on Hyperliquid using GTC orders."""
         if self.current_position is None:
             self.logger.warning("No position to close")
             return False
         try:
             self.initialize_api_clients()
-            self.logger.info(f"📉 Closing live position for BTC (INSTANT EXECUTION): {reason}")
+            self.logger.info(f"📉 Closing live position for BTC (GTC LIMIT ORDER): {reason}")
+            
+            # Get current price for limit order placement
+            current_price = self.client.get_current_price("BTC")
+            if current_price is None:
+                self.logger.error("Failed to get current price for limit order")
+                return False
+            
+            position = self.current_position
+            direction = position['direction']
+            position_size = position['size']
+            
+            # Determine order side and limit price
+            if direction == 'long':
+                # For long position, we need to sell to close
+                is_buy = False
+                # Place limit order slightly below current price for better fill
+                limit_price = current_price * 0.999  # 0.1% below market
+            else:  # short
+                # For short position, we need to buy to close
+                is_buy = True
+                # Place limit order slightly above current price for better fill
+                limit_price = current_price * 1.001  # 0.1% above market
+            
+            # Round to tick size
+            limit_price = self.round_to_tick(limit_price)
+            
+            self.logger.info(f"Placing GTC limit order to close {direction} position:")
+            self.logger.info(f"  Side: {'BUY' if is_buy else 'SELL'}")
+            self.logger.info(f"  Size: {position_size}")
+            self.logger.info(f"  Limit Price: ${limit_price:.4f}")
+            self.logger.info(f"  Current Price: ${current_price:.4f}")
+            self.logger.info(f"  Exit Fee: $0.30")
+            
+            # Use the new GTC close order method
+            order_result = await self.place_gtc_close_order(
+                symbol="BTC",
+                is_buy=is_buy,
+                size=position_size,
+                limit_price=limit_price
+            )
+            
+            if order_result and 'status' in order_result:
+                # Handle case where GTC order fills immediately
+                if order_result['status'] == 'filled':
+                    # GTC order filled immediately - process the fill
+                    close_price = order_result['fill_price']
+                    close_size = order_result['fill_size']
+                    
+                    # Calculate P&L
+                    entry_price = self.current_position['entry_price']
+                    position_size = self.current_position['size']
+                    direction = self.current_position['direction']
+                    
+                    if direction == 'long':
+                        pnl = (close_price - entry_price) * position_size
+                    else:  # short
+                        pnl = (entry_price - close_price) * position_size
+                    
+                    # SUBTRACT EXIT FEE: $0.30
+                    exit_fee = 0.30
+                    pnl -= exit_fee
+                    
+                    # Update statistics
+                    self.total_trades += 1
+                    self.total_pnl += pnl
+                    if pnl > 0:
+                        self.winning_trades += 1
+                    
+                    # Record trade
+                    trade_record = {
+                        'entry_time': self.current_position['entry_time'],
+                        'exit_time': datetime.now(),
+                        'direction': direction,
+                        'entry_price': entry_price,
+                        'exit_price': close_price,
+                        'size': position_size,
+                        'pnl': pnl,
+                        'entry_fee': self.current_position.get('entry_fee', 0.10),
+                        'exit_fee': exit_fee,
+                        'total_fees': self.current_position.get('entry_fee', 0.10) + exit_fee,
+                        'reason': reason
+                    }
+                    self.trade_history.append(trade_record)
+                    
+                    self.logger.info(f"✅ LIVE POSITION CLOSED FOR BTC (GTC IMMEDIATE FILL):")
+                    self.logger.info(f"  Exit Price: ${close_price:.4f}")
+                    self.logger.info(f"  Raw P&L: ${pnl + exit_fee:.2f}")
+                    self.logger.info(f"  Exit Fee: ${exit_fee:.2f}")
+                    self.logger.info(f"  Net P&L: ${pnl:.2f}")
+                    self.logger.info(f"  Total Fees: ${trade_record['total_fees']:.2f}")
+                    self.logger.info(f"  Reason: {reason}")
+                    self.logger.info(f"  Total P&L: ${self.total_pnl:.2f}")
+                    self.logger.info(f"  Win Rate: {(self.winning_trades/self.total_trades)*100:.1f}%")
+                    
+                    # Send Telegram notification
+                    pnl_emoji = "🟢" if pnl > 0 else "🔴"
+                    send_telegram_message(
+                        f"{pnl_emoji} GTC IMMEDIATE CLOSE: BTC at ${close_price:.4f} | "
+                        f"Net P&L: ${pnl:.2f} | Fees: ${trade_record['total_fees']:.2f} | Reason: {reason} | Total: ${self.total_pnl:.2f}"
+                    )
+                    
+                    # Stop monitoring
+                    self.stop_stop_monitoring()
+                    
+                    # Clear position
+                    self.current_position = None
+                    self.last_position_close_time = datetime.now()
+                    
+                    # Clear order updates file after closing position
+                    self.clear_order_updates_file()
+                    
+                    return True
+                    
+                elif order_result['status'] == 'resting':
+                    # GTC order placed but not filled - monitor for fill
+                    cloid = order_result['cloid']
+                    order_id = order_result['order_id']
+                    
+                    self.logger.info(f"✅ GTC close order placed successfully:")
+                    self.logger.info(f"  Order ID: {order_id}")
+                    self.logger.info(f"  Client Order ID: {cloid}")
+                    self.logger.info(f"  Monitoring for fill...")
+                    self.logger.info(f"  Exit Fee: $0.30")
+                    
+                    # Monitor the GTC order for fill
+                    max_wait_time = 300  # 5 minutes max wait
+                    check_interval = 2  # Check every 2 seconds
+                    elapsed_time = 0
+                    
+                    while elapsed_time < max_wait_time:
+                        try:
+                            # Check order status
+                            status_result = await self.check_order_status_by_cloid("BTC", cloid)
+                            
+                            if status_result and 'status' in status_result:
+                                if status_result['status'] == 'filled_via_position':
+                                    # Order was filled - get position data
+                                    pos_data = status_result['position_data']
+                                    close_price = float(pos_data.get("entryPx", limit_price))
+                                    close_size = abs(float(pos_data.get("szi", position_size)))
+                                    
+                                    # Calculate P&L
+                                    entry_price = self.current_position['entry_price']
+                                    position_size = self.current_position['size']
+                                    direction = self.current_position['direction']
+                                    
+                                    if direction == 'long':
+                                        pnl = (close_price - entry_price) * position_size
+                                    else:  # short
+                                        pnl = (entry_price - close_price) * position_size
+                                    
+                                    # SUBTRACT EXIT FEE: $0.30
+                                    exit_fee = 0.30
+                                    pnl -= exit_fee
+                                    
+                                    # Update statistics
+                                    self.total_trades += 1
+                                    self.total_pnl += pnl
+                                    if pnl > 0:
+                                        self.winning_trades += 1
+                                    
+                                    # Record trade
+                                    trade_record = {
+                                        'entry_time': self.current_position['entry_time'],
+                                        'exit_time': datetime.now(),
+                                        'direction': direction,
+                                        'entry_price': entry_price,
+                                        'exit_price': close_price,
+                                        'size': position_size,
+                                        'pnl': pnl,
+                                        'entry_fee': self.current_position.get('entry_fee', 0.10),
+                                        'exit_fee': exit_fee,
+                                        'total_fees': self.current_position.get('entry_fee', 0.10) + exit_fee,
+                                        'reason': reason
+                                    }
+                                    self.trade_history.append(trade_record)
+                                    
+                                    self.logger.info(f"✅ LIVE POSITION CLOSED FOR BTC (GTC FILL):")
+                                    self.logger.info(f"  Exit Price: ${close_price:.4f}")
+                                    self.logger.info(f"  Raw P&L: ${pnl + exit_fee:.2f}")
+                                    self.logger.info(f"  Exit Fee: ${exit_fee:.2f}")
+                                    self.logger.info(f"  Net P&L: ${pnl:.2f}")
+                                    self.logger.info(f"  Total Fees: ${trade_record['total_fees']:.2f}")
+                                    self.logger.info(f"  Reason: {reason}")
+                                    self.logger.info(f"  Total P&L: ${self.total_pnl:.2f}")
+                                    self.logger.info(f"  Win Rate: {(self.winning_trades/self.total_trades)*100:.1f}%")
+                                    
+                                    # Send Telegram notification
+                                    pnl_emoji = "🟢" if pnl > 0 else "🔴"
+                                    send_telegram_message(
+                                        f"{pnl_emoji} GTC TRADE CLOSED: BTC at ${close_price:.4f} | "
+                                        f"Net P&L: ${pnl:.2f} | Fees: ${trade_record['total_fees']:.2f} | Reason: {reason} | Total: ${self.total_pnl:.2f}"
+                                    )
+                                    
+                                    # Stop monitoring
+                                    self.stop_stop_monitoring()
+                                    
+                                    # Clear position
+                                    self.current_position = None
+                                    self.last_position_close_time = datetime.now()
+                                    
+                                    # Clear order updates file after closing position
+                                    self.clear_order_updates_file()
+                                    
+                                    return True
+                                
+                                elif status_result['status'] == 'resting':
+                                    # Order is still open, continue monitoring
+                                    self.logger.debug(f"GTC order still open, waiting... (elapsed: {elapsed_time}s)")
+                                
+                                elif status_result['status'] == 'cancelled':
+                                    # Order was cancelled, try market order as fallback
+                                    self.logger.warning("GTC order was cancelled, trying market order fallback")
+                                    return await self.close_with_market_fallback(reason)
+                            
+                            await asyncio.sleep(check_interval)
+                            elapsed_time += check_interval
+
+                        except Exception as e:
+                            self.logger.error(f"Error monitoring GTC order: {e}")
+                            await asyncio.sleep(check_interval)
+                            elapsed_time += check_interval
+                        
+                        # If we reach here, order didn't fill within timeout
+                        self.logger.warning(f"GTC order didn't fill within {max_wait_time}s, trying market order fallback")
+                        return await self.close_with_market_fallback(reason)
+                        
+                    else:
+                        self.logger.error(f"Failed to place GTC close order: {order_result}")
+                        return False
+            else:
+                self.logger.error(f"Failed to place GTC close order: {order_result}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Error closing live position: {e}")
+            return False
+    
+    async def close_with_market_fallback(self, reason="market_fallback"):
+        """Fallback method to close position with market order if GTC fails"""
+        try:
+            self.logger.info(f"📉 Using market order fallback to close position: {reason}")
+            
             # Use market_close for instant execution
             close_result = self.exchange.market_close(
                 coin="BTC",
@@ -1359,7 +1496,7 @@ class BTCLiveTradingBot:
                     }
                     self.trade_history.append(trade_record)
                     
-                    self.logger.info(f"✅ LIVE POSITION CLOSED FOR BTC (INSTANT EXECUTION):")
+                    self.logger.info(f"✅ LIVE POSITION CLOSED FOR BTC (MARKET FALLBACK):")
                     self.logger.info(f"  Exit Price: ${close_price:.4f}")
                     self.logger.info(f"  P&L: ${pnl:.2f}")
                     self.logger.info(f"  Reason: {reason}")
@@ -1367,9 +1504,9 @@ class BTCLiveTradingBot:
                     self.logger.info(f"  Win Rate: {(self.winning_trades/self.total_trades)*100:.1f}%")
                     
                     # Send Telegram notification
-                    pnl_emoji = "" if pnl > 0 else "🔴"
+                    pnl_emoji = "🟢" if pnl > 0 else "🔴"
                     send_telegram_message(
-                        f"{pnl_emoji} INSTANT TRADE CLOSED: BTC at ${close_price:.4f} | "
+                        f"{pnl_emoji} MARKET FALLBACK CLOSED: BTC at ${close_price:.4f} | "
                         f"P&L: ${pnl:.2f} | Reason: {reason} | Total: ${self.total_pnl:.2f}"
                     )
                     
@@ -1385,18 +1522,29 @@ class BTCLiveTradingBot:
                     
                     return True
             else:
-                self.logger.error(f"Failed to close position: {close_result}")
+                self.logger.error(f"Failed to close position with market fallback: {close_result}")
                 return False
                 
         except Exception as e:
-            self.logger.error(f"Error closing live position: {e}")
+            self.logger.error(f"Error in market fallback close: {e}")
             return False
     
     def start_stop_monitoring(self):
-        """Start the continuous stop monitoring task"""
-        if self.current_position is not None and not self.stop_monitoring_active:
-            self.stop_monitoring_task = asyncio.create_task(self.monitor_stops_continuously())
-            self.logger.info("Started continuous stop monitoring for BTC")
+        """Force start the continuous stop monitoring task if in a position."""
+        if self.current_position is not None:
+            # Only start if not already running or if the task is done/crashed
+            if (
+                not getattr(self, "stop_monitoring_task", None)
+                or self.stop_monitoring_task.done()
+                or not getattr(self, "stop_monitoring_active", False)
+            ):
+                self.logger.info("FORCE STARTING continuous stop monitoring for BTC")
+                self.stop_monitoring_active = True
+                self.stop_monitoring_task = asyncio.create_task(self.monitor_stops_continuously())
+            else:
+                self.logger.debug("Stop monitoring already running.")
+        else:
+            self.logger.debug("No position, not starting stop monitoring.")
     
     def stop_stop_monitoring(self):
         """Stop the continuous stop monitoring task"""
@@ -1422,7 +1570,7 @@ class BTCLiveTradingBot:
                 
                 if current_price is None:
                     self.logger.debug(f"🔍 MONITOR #{monitor_count}: Failed to get current price")
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(0.5)
                     continue
                 
                 position = self.current_position
@@ -1489,7 +1637,7 @@ class BTCLiveTradingBot:
                     self.logger.info(f"  Price: ${current_price:.4f} <= FVG Stop: ${position['stop_loss']:.4f}")
                     self.logger.info(f"  Final P&L: ${current_pnl:.4f} | R:R: {rr_ratio:.2f}")
                     send_telegram_message(f"🛑 FVG STOP HIT: BTC LONG at ${position['stop_loss']:.4f}")
-                    self.close_live_position("FVG Stop Loss Hit")
+                    await self.close_live_position("FVG Stop Loss Hit")
                     self.stop_monitoring_active = False
                     break
                 elif direction == 'short' and current_price >= position['stop_loss']:
@@ -1497,7 +1645,7 @@ class BTCLiveTradingBot:
                     self.logger.info(f"  Price: ${current_price:.4f} >= FVG Stop: ${position['stop_loss']:.4f}")
                     self.logger.info(f"  Final P&L: ${current_pnl:.4f} | R:R: {rr_ratio:.2f}")
                     send_telegram_message(f"🛑 FVG STOP HIT: BTC SHORT at ${position['stop_loss']:.4f}")
-                    self.close_live_position("FVG Stop Loss Hit")
+                    await self.close_live_position("FVG Stop Loss Hit")
                     self.stop_monitoring_active = False
                     break
                 
@@ -1526,7 +1674,7 @@ class BTCLiveTradingBot:
                 
                 try:
                     # DEBUG: Log every cycle for visibility
-                    if cycle_count % 6 == 0:  # Every 60 seconds (6 cycles * 10.0s)
+                    if cycle_count % 20 == 0:  # Every 10 seconds (20 cycles * 0.5s)
                         self.logger.info(f"🔄 TRADING CYCLE #{cycle_count} - Searching for BTC setups...")
                     
                     # Check if we're in a position OR have a pending order
@@ -1537,7 +1685,7 @@ class BTCLiveTradingBot:
                         if self.pending_order:
                             self.logger.info(f"⏳ BTC has pending ALO order: {self.pending_order['direction']} @ ${self.pending_order['limit_price']:.2f}")
                         
-                        await asyncio.sleep(10.0)
+                        await asyncio.sleep(0.5)
                         continue
                     
                     # Check cooldown period (5 minutes instead of 1 minute)
@@ -1549,7 +1697,7 @@ class BTCLiveTradingBot:
                     if cooldown_remaining and cooldown_remaining > 0:
                         self.logger.info(f"⏳ COOLDOWN ACTIVE for BTC: {cooldown_remaining:.0f}s remaining")
                         candle_idx += 1
-                        await asyncio.sleep(10.0)
+                        await asyncio.sleep(0.5)
                         continue
                     
                     # Only check Elixir monitor if we have a pending order
@@ -1563,7 +1711,7 @@ class BTCLiveTradingBot:
                                 self.logger.info(f"✅ ELIXIR UPDATE PROCESSED SUCCESSFULLY!")
                     
                     # MAIN LOOP: No position, no pending order, no cooldown - SEARCHING FOR TRADES
-                    if cycle_count % 3 == 0:  # Log every 30 seconds (3 cycles * 10.0s)
+                    if cycle_count % 10 == 0:  # Log every 10 cycles when searching
                         self.logger.info(f"🔍 MAIN LOOP: Searching for BTC trade setups... (Cycle #{cycle_count})")
                     
                     # Fetch live data for BTC
@@ -1588,11 +1736,11 @@ class BTCLiveTradingBot:
                                     self.logger.info(f"✅ SUCCESSFULLY opened position for BTC")
                     
                     candle_idx += 1
-                    await asyncio.sleep(10.0)  # Search for new positions every 10 seconds
+                    await asyncio.sleep(0.5)  # Changed from 10s to 0.5s for faster response
                     
                 except Exception as e:
                     self.logger.error(f"Error in live trading cycle: {e}")
-                    await asyncio.sleep(10.0)
+                    await asyncio.sleep(0.5)
                     
         except KeyboardInterrupt:
             self.logger.info("🛑 BTC live trading stopped by user (Ctrl+C)")
@@ -1600,7 +1748,7 @@ class BTCLiveTradingBot:
         if self.current_position is not None:
             current_price = self.client.get_current_price("BTC")
             if current_price:
-                self.close_live_position("Session End")
+                await self.close_live_position("Session End")
         
         self.client.close()
 
@@ -1658,6 +1806,90 @@ class BTCLiveTradingBot:
             self.logger.error(f"Error checking for existing position: {e}")
             return False
 
+    # Add this new method for GTC closing orders
+    async def place_gtc_close_order(self, symbol, is_buy, size, limit_price):
+        """Place a GTC limit order specifically for closing positions"""
+        try:
+            # Initialize API clients if needed
+            self.initialize_api_clients()
+            
+            self.logger.info(f"📋 Placing GTC CLOSE ORDER: {symbol} {'BUY' if is_buy else 'SELL'} {size} @ ${limit_price:.4f}")
+            
+            # Generate a unique client order ID (128 bit hex string)
+            import secrets
+            cloid = "0x" + secrets.token_hex(16)  # 16 bytes = 128 bits
+            
+            self.logger.info(f"📋 Generated Client Order ID: {cloid}")
+            
+            # DEBUG: Let's see what the current market price is
+            current_price = self.client.get_current_price(symbol)
+            self.logger.info(f"📋 Current market price: ${current_price:.4f}")
+            self.logger.info(f"📋 GTC Limit price: ${limit_price:.4f}")
+            
+            # Use the official SDK order method with GTC time-in-force
+            order_result = self.exchange.order(
+                symbol, 
+                is_buy, 
+                size, 
+                limit_price, 
+                {"limit": {"tif": "Gtc"}, "cloid": cloid}  # Use GTC time-in-force
+            )
+            
+            self.logger.info(f"📋 GTC CLOSE ORDER RESULT: {order_result}")
+            
+            # Check if order was rejected immediately
+            if order_result and order_result["status"] == "ok":
+                status = order_result["response"]["data"]["statuses"][0]
+                
+                if "filled" in status:
+                    # Order was filled immediately
+                    filled_data = status["filled"]
+                    fill_price = float(filled_data.get("avgPx", limit_price))
+                    fill_size = float(filled_data.get("totalSz", size))
+                    order_id = filled_data.get("oid")
+                    
+                    self.logger.info(f"✅ GTC CLOSE ORDER FILLED IMMEDIATELY!")
+                    self.logger.info(f"  Fill Price: ${fill_price:.4f}")
+                    self.logger.info(f"  Fill Size: {fill_size}")
+                    self.logger.info(f"  Client Order ID: {cloid}")
+                    
+                    return {
+                        'status': 'filled',
+                        'order_id': order_id,
+                        'cloid': cloid,
+                        'fill_price': fill_price,
+                        'fill_size': fill_size
+                    }
+                elif "resting" in status:
+                    # Order placed but not filled (resting)
+                    order_id = status["resting"]["oid"]
+                    
+                    self.logger.info(f"⏳ GTC CLOSE ORDER PLACED BUT NOT FILLED (RESTING)")
+                    self.logger.info(f"  Order ID: {order_id}")
+                    self.logger.info(f"  Client Order ID: {cloid}")
+                    
+                    return {
+                        'status': 'resting',
+                        'order_id': order_id,
+                        'cloid': cloid,
+                        'limit_price': limit_price,
+                        'size': size
+                    }
+                elif "cancelled" in status:
+                    # Order was cancelled immediately
+                    self.logger.warning(f"⚠️ GTC CLOSE ORDER CANCELLED IMMEDIATELY (rejected)")
+                    return {
+                        'status': 'rejected',
+                        'cloid': cloid,
+                        'reason': 'GTC order would have matched immediately'
+                    }
+            else:
+                self.logger.error(f"❌ GTC CLOSE ORDER FAILED: {order_result}")
+                return {'status': 'failed', 'error': order_result}
+                
+        except Exception as e:
+            self.logger.error(f"❌ Error placing GTC close order: {e}")
+            return {'status': 'error', 'error': str(e)}
 
 
 async def main():
