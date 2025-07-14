@@ -24,7 +24,16 @@ class AVAXLiveTradingBot:
             'STOP_LOSS_BUFFER': STOP_LOSS_BUFFER,
             'TAKE_PROFIT_RATIO': TAKE_PROFIT_RATIO,
             'RISK_PER_TRADE': RISK_PER_TRADE,
-            'MAX_LEVERAGE': MAX_LEVERAGE
+            'MAX_LEVERAGE': MAX_LEVERAGE,
+            # MATCH BACKTEST: Add these configs
+            'TRAILING_STOP': True,
+            'MIN_VOLUME': 1000,
+            'MIN_FVG_SIZE': 0.5,
+            'MAX_FVG_SIZE': 5.0,
+            'FVG_TIMEOUT': 100,
+            'MSS_CONFIRMATION': 3,
+            'BOS_CONFIRMATION': 2,
+            'TRAILING_CONFIRMATION_CANDLES': TRAILING_CONFIRMATION_CANDLES
         }
         
         # Setup logging FIRST (before any API calls)
@@ -161,53 +170,37 @@ class AVAXLiveTradingBot:
     
     def calculate_position_size(self, entry_price, stop_loss, direction):
         """Calculate position size based on risk management rules with capital and leverage constraints"""
-        # AVAX-specific: Ensure minimum stop loss distance as 0.0015% of current price
-        min_stop_distance = entry_price * 0.0015  # 0.0015% of entry price
+        # KEEP LIVE TRADING: Use $1 fixed risk
+        target_risk = 1  # $1 fixed risk (keep live trading amount)
         
+        # LIVE TRADING CONSTRAINT: Ensure minimum stop loss distance as 0.15% of current price
+        min_stop_distance = entry_price * 0.0015  # 0.15% of entry price
+        
+        # Check if strategy stop loss meets minimum distance requirement
         if direction == 'long':
             current_stop_distance = entry_price - stop_loss
             if current_stop_distance < min_stop_distance:
                 stop_loss = entry_price - min_stop_distance
-                self.logger.info(f"AVAX: Stop loss adjusted to minimum 0.0015% distance: ${stop_loss:.4f} ({min_stop_distance*100:.4f}%)")
+                self.logger.info(f"AVAX: Strategy stop loss adjusted to minimum 0.15% distance: ${stop_loss:.4f} ({min_stop_distance*100:.4f}%)")
         else:  # short
             current_stop_distance = stop_loss - entry_price
             if current_stop_distance < min_stop_distance:
                 stop_loss = entry_price + min_stop_distance
-                self.logger.info(f"AVAX: Stop loss adjusted to minimum 0.0015% distance: ${stop_loss:.4f} ({min_stop_distance*100:.4f}%)")
-        
-        # FIXED: Use $10 fixed risk as originally requested
-        target_risk = 1  # $10 fixed risk (as you wanted)
+                self.logger.info(f"AVAX: Strategy stop loss adjusted to minimum 0.15% distance: ${stop_loss:.4f} ({min_stop_distance*100:.4f}%)")
         
         # Position size = Target Risk / Price Risk per Unit
-        # This guarantees we risk exactly $10
+        # This guarantees we risk exactly $1
         risk_amount = abs(entry_price - stop_loss)
         position_size = target_risk / risk_amount
-        
-        # ROUND THE POSITION SIZE to avoid float precision issues
-        position_size = round(position_size, 2)  # Round to 2 decimal places for Hyperliquid
-        
-        # Check minimum order size for Hyperliquid (usually 0.01)
-        min_order_size = 0.01
-        if position_size < min_order_size:
-            position_size = min_order_size
-            self.logger.warning(f"Position size too small, using minimum: {min_order_size}")
         
         # Calculate position value (size × entry price)
         position_value = position_size * entry_price
         
-        # Get leverage for AVAX
-        leverage = self.config['MAX_LEVERAGE'].get("AVAX", 10)  # Use 10x for AVAX
+        # MATCH BACKTEST: Use 20x leverage (not 10x)
+        leverage = self.config['MAX_LEVERAGE'].get("AVAX", 20)  # Use 20x like backtest
         
         # Capital constraints: $10,000 capital with leverage = max position value
-        max_position_value = 10000 * leverage
-        
-        self.logger.info(f"DEBUG: Position calculation for AVAX:")
-        self.logger.info(f"  Entry: ${entry_price:.4f}, Stop: ${stop_loss:.4f}")
-        self.logger.info(f"  Risk amount: ${risk_amount:.4f}")
-        self.logger.info(f"  Position size: {position_size:.2f}")
-        self.logger.info(f"  Position value: ${position_value:.2f}")
-        self.logger.info(f"  Leverage: {leverage}x")
-        self.logger.info(f"  Max position value: ${max_position_value:.2f}")
+        max_position_value = 10000 * leverage  # Dynamic based on symbol leverage
         
         # Check if position value exceeds maximum allowed
         if position_value > max_position_value:
@@ -226,9 +219,6 @@ class AVAXLiveTradingBot:
             # Recalculate position size with new stop
             new_risk_amount = abs(entry_price - new_stop)
             position_size = target_risk / new_risk_amount
-            position_size = round(position_size, 2)  # Round to 2 decimal places
-            if position_size < min_order_size:
-                position_size = min_order_size
             position_value = position_size * entry_price
             
             # Check if this fits within capital constraints
@@ -238,12 +228,18 @@ class AVAXLiveTradingBot:
             else:
                 # If still too large, scale down position size as last resort
                 position_size = max_position_value / entry_price
-                position_size = round(position_size, 2)  # Round to 2 decimal places
-                if position_size < min_order_size:
-                    position_size = min_order_size
                 actual_risk = position_size * new_risk_amount
-                self.logger.warning(f"Position size reduced due to capital constraints. Risk: ${actual_risk:.2f} instead of $10")
+                self.logger.warning(f"Position size reduced due to capital constraints. Risk: ${actual_risk:.2f} instead of $1")
                 return position_size, new_stop
+        
+        # LIVE TRADING CONSTRAINT: Round position size for Hyperliquid
+        position_size = round(position_size, 2)  # Round to 2 decimal places for Hyperliquid
+        
+        # LIVE TRADING CONSTRAINT: Check minimum order size
+        min_order_size = 0.01
+        if position_size < min_order_size:
+            position_size = min_order_size
+            self.logger.warning(f"Position size too small, using minimum: {min_order_size}")
         
         return position_size, stop_loss
     
@@ -1073,7 +1069,7 @@ class AVAXLiveTradingBot:
         self.pending_order = None
 
     async def open_live_position(self, setup, current_price):
-        """Open a live trading position using INVERTED ALO limit orders for momentum"""
+        """Open a live trading position using strategy-based stop loss (like backtest)"""
         if self.current_position is not None or self.position_lock:
             self.logger.warning(f"Already in a position for AVAX or position lock active, cannot open new one")
             return False
@@ -1084,68 +1080,38 @@ class AVAXLiveTradingBot:
             
             self.logger.info(f"DEBUG: Opening live position for AVAX with setup: {setup}")
             
-            # MOMENTUM APPROACH: Stop placement based on FVG
-            # For LONG: Stop right below the FVG bottom
-            # For SHORT: Stop right above the FVG top
+            # MATCH BACKTEST: Use strategy-based stop loss (not FVG-based)
+            stop_loss = setup['stop_loss']  # Use the stop loss from strategy setup
             
-            if setup['direction'] == 'long':
-                # LONG: Stop below FVG bottom (if price goes through FVG, plan failed)
-                fvg_bottom = setup['fvg']['bottom']
-                stop_loss = fvg_bottom - self.config.get('STOP_LOSS_BUFFER', 0.005)
-                self.logger.info(f"📈 MOMENTUM LONG: Stop below FVG bottom")
-                self.logger.info(f"  FVG Bottom: ${fvg_bottom:.4f}")
-                self.logger.info(f"  Stop Loss: ${stop_loss:.4f}")
-            else:
-                # SHORT: Stop above FVG top (if price goes through FVG, plan failed)
-                fvg_top = setup['fvg']['top']
-                stop_loss = fvg_top + self.config.get('STOP_LOSS_BUFFER', 0.005)
-                self.logger.info(f"📉 MOMENTUM SHORT: Stop above FVG top")
-                self.logger.info(f"  FVG Top: ${fvg_top:.4f}")
-                self.logger.info(f"  Stop Loss: ${stop_loss:.4f}")
-            
-            # Calculate position size with the FVG-based stop
+            # Calculate position size with the strategy-based stop
             position_size, adjusted_stop = self.calculate_position_size(setup['entry_price'], stop_loss, setup['direction'])
             
-            # Use adjusted stop if it was changed (respects minimum size rule)
+            # Use adjusted stop if it was changed (respects capital constraints)
             final_stop = adjusted_stop if adjusted_stop != stop_loss else stop_loss
             
-            # Get leverage for AVAX
-            leverage = self.config['MAX_LEVERAGE'].get("AVAX", 10)
+            # MATCH BACKTEST: Use 20x leverage
+            leverage = self.config['MAX_LEVERAGE'].get("AVAX", 20)  # Use 20x like backtest
             
-            # Place the actual order on Hyperliquid using INVERTED ALO limit order
+            # Place the actual order on Hyperliquid using ALO limit order
             is_buy = setup['direction'] == 'long'
             
-            # INVERTED ALO limit price - FOLLOWING MOMENTUM
-            # For LONG: Place limit order ABOVE current price (follows momentum up)
-            # For SHORT: Place limit order BELOW current price (follows momentum down)
+            # LIVE TRADING CONSTRAINT: Use ALO limit order for fee efficiency
+            # Place limit order at strategy entry price (not inverted)
+            limit_price = setup['entry_price']
             
-            if is_buy:
-                # LONG: Place limit buy BELOW current price for ALO (subtract buffer)
-                # Use FVG entry target as base, with 0.05 cent buffer BELOW for ALO
-                limit_price = setup['entry_price'] - 0.0005  # 0.05 cents BELOW FVG entry
-                self.logger.info(f"📈 MOMENTUM LONG SETUP: Placing ALO limit buy BELOW FVG entry")
-                self.logger.info(f"  FVG Entry Target: ${setup['entry_price']:.4f}")
-                self.logger.info(f"  ALO Limit Price: ${limit_price:.4f} (0.05 cents BELOW FVG)")
-            else:
-                # SHORT: Place limit sell ABOVE current price for ALO (add buffer)
-                # Use FVG entry target as base, with 0.05 cent buffer ABOVE for ALO
-                limit_price = setup['entry_price'] + 0.0005  # 0.05 cents ABOVE FVG entry
-                self.logger.info(f"📉 MOMENTUM SHORT SETUP: Placing ALO limit sell ABOVE FVG entry")
-                self.logger.info(f"  ALO Limit Price: ${limit_price:.4f} (0.05 cents ABOVE FVG)")
+            # Round to tick size for Hyperliquid
+            limit_price = self.round_to_tick(limit_price)
             
-            # Round to 3 decimal places
-            limit_price = round(limit_price, 3)
-            
-            self.logger.info(f"📈 Opening MOMENTUM position for AVAX (INVERTED ALO LIMIT ORDER):")
+            self.logger.info(f"📈 Opening position for AVAX (ALO LIMIT ORDER):")
             self.logger.info(f"  Direction: {setup['direction'].upper()}")
-            self.logger.info(f"  INVERTED ALO Limit Price: ${limit_price:.4f}")
+            self.logger.info(f"  ALO Limit Price: ${limit_price:.4f}")
             self.logger.info(f"  Current Market: ${current_price:.4f}")
-            self.logger.info(f"  FVG Entry Target: ${setup['entry_price']:.4f}")
-            self.logger.info(f"  FVG-Based Stop: ${final_stop:.4f}")
+            self.logger.info(f"  Strategy Entry Target: ${setup['entry_price']:.4f}")
+            self.logger.info(f"  Strategy-Based Stop: ${final_stop:.4f}")
             self.logger.info(f"  Size: {position_size:.4f}")
-            self.logger.info(f"  Risk: $10")
+            self.logger.info(f"  Risk: $1")  # Keep live trading amount
             self.logger.info(f"  Leverage: {leverage}x")
-            self.logger.info(f"  Order Type: INVERTED ALO (Momentum Following)")
+            self.logger.info(f"  Order Type: ALO (Fee Efficient)")
             
             order_result = await self.place_limit_order("AVAX", is_buy, position_size, limit_price, "Alo")
             
@@ -1153,7 +1119,7 @@ class AVAXLiveTradingBot:
                 self.add_order_to_elixir_monitor(order_result, setup, final_stop)
                 
             if order_result['status'] == 'filled':
-                # Order was filled immediately (more likely with momentum approach)
+                # Order was filled immediately
                 self.current_position = {
                     'direction': setup['direction'],
                     'entry_price': order_result['fill_price'],
@@ -1161,22 +1127,24 @@ class AVAXLiveTradingBot:
                     'take_profit': setup.get('take_profit'),
                     'size': order_result['fill_size'],
                     'entry_time': datetime.now(),
-                    'reason': f"Momentum FVG - {setup['reason']}",
+                    'reason': f"Strategy FVG - {setup['reason']}",  # Match backtest naming
                     'leverage': leverage,
                     'order_id': order_result['order_id'],
-                    'strategy_type': 'momentum',  # Mark as momentum strategy
-                    'fvg': setup['fvg']  # Store FVG info for reference
+                    'strategy_type': 'strategy',  # Mark as strategy-based (not momentum)
+                    'fvg': setup['fvg'],  # Store FVG info for reference
+                    'entry_fee': 0.10  # ADD ENTRY FEE: $0.10
                 }
                 
-                self.logger.info(f"✅ INVERTED ALO ORDER FILLED IMMEDIATELY:")
+                self.logger.info(f"✅ ALO ORDER FILLED IMMEDIATELY:")
                 self.logger.info(f"  Actual Entry: ${order_result['fill_price']:.4f}")
                 self.logger.info(f"  Actual Size: {order_result['fill_size']:.4f}")
-                self.logger.info(f"  FVG-Based Stop: ${final_stop:.4f}")
+                self.logger.info(f"  Strategy-Based Stop: ${final_stop:.4f}")
+                self.logger.info(f"  Entry Fee: $0.10")
                 
                 # Send Telegram notification
                 send_telegram_message(
-                    f"✅ MOMENTUM ALO FILLED: AVAX {setup['direction'].upper()} at ${order_result['fill_price']:.4f} | "
-                    f"FVG Stop: ${final_stop:.4f} | Size: {order_result['fill_size']:.4f} | Risk: $10"
+                    f"✅ ALO FILLED: AVAX {setup['direction'].upper()} at ${order_result['fill_price']:.4f} | "
+                    f"Strategy Stop: ${final_stop:.4f} | Size: {order_result['fill_size']:.4f} | Risk: $1 | Entry Fee: $0.10"
                 )
                 
                 # Start stop monitoring
@@ -1187,10 +1155,9 @@ class AVAXLiveTradingBot:
                 
             elif order_result['status'] == 'resting':
                 # Order placed but not filled - this is expected with ALO
-                # FIXED: Store the CLIENT ORDER ID for monitoring, not the regular order ID
                 self.pending_order = {
-                    'order_id': order_result['cloid'],  # Store client order ID for monitoring
-                    'regular_order_id': order_result['order_id'],  # Store regular order ID as backup
+                    'order_id': order_result['cloid'],
+                    'regular_order_id': order_result['order_id'],
                     'symbol': 'AVAX',
                     'direction': setup['direction'],
                     'limit_price': limit_price,
@@ -1199,22 +1166,23 @@ class AVAXLiveTradingBot:
                     'setup': setup,
                     'leverage': leverage,
                     'order_time': datetime.now(),
-                    'order_type': 'INVERTED_ALO',
-                    'strategy_type': 'momentum',
-                    'fvg': setup['fvg']  # Store FVG info for reference
+                    'order_type': 'ALO',
+                    'strategy_type': 'strategy',  # Mark as strategy-based
+                    'fvg': setup['fvg'],
+                    'entry_fee': 0.10  # ADD ENTRY FEE: $0.10
                 }
                 
-                self.logger.info(f"⏳ INVERTED ALO LIMIT ORDER PLACED (RESTING):")
+                self.logger.info(f"⏳ ALO LIMIT ORDER PLACED (RESTING):")
                 self.logger.info(f"  Client Order ID: {order_result['cloid']}")
                 self.logger.info(f"  Regular Order ID: {order_result['order_id']}")
-                self.logger.info(f"  Waiting for momentum continuation to ${limit_price:.4f}")
-                self.logger.info(f"  FVG-Based Stop: ${final_stop:.4f}")
-                self.logger.info(f"  Will monitor for fill or cancel after timeout")
+                self.logger.info(f"  Waiting for fill at ${limit_price:.4f}")
+                self.logger.info(f"  Strategy-Based Stop: ${final_stop:.4f}")
+                self.logger.info(f"  Entry Fee: $0.10")
                 
                 # Send Telegram notification
                 send_telegram_message(
-                    f"⏳ MOMENTUM ALO PLACED: AVAX {setup['direction'].upper()} @ ${limit_price:.4f} | "
-                    f"FVG Stop: ${final_stop:.4f} | Waiting for momentum"
+                    f"⏳ ALO PLACED: AVAX {setup['direction'].upper()} @ ${limit_price:.4f} | "
+                    f"Strategy Stop: ${final_stop:.4f} | Waiting for fill | Entry Fee: $0.10"
                 )
                 
                 # Start monitoring the pending order
@@ -1224,12 +1192,12 @@ class AVAXLiveTradingBot:
                 return True
                 
             else:
-                self.logger.error(f"❌ FAILED to place inverted ALO limit order: {order_result}")
+                self.logger.error(f"❌ FAILED to place ALO limit order: {order_result}")
                 self.position_lock = False
                 return False
                 
         except Exception as e:
-            self.logger.error(f"Error opening momentum position: {e}")
+            self.logger.error(f"Error opening strategy position: {e}")
             self.position_lock = False
             return False
     
@@ -1272,6 +1240,7 @@ class AVAXLiveTradingBot:
             self.logger.info(f"  Size: {position_size}")
             self.logger.info(f"  Limit Price: ${limit_price:.4f}")
             self.logger.info(f"  Current Price: ${current_price:.4f}")
+            self.logger.info(f"  Exit Fee: $0.30")
             
             # Use the new GTC close order method
             order_result = await self.place_gtc_close_order(
@@ -1298,6 +1267,10 @@ class AVAXLiveTradingBot:
                     else:  # short
                         pnl = (entry_price - close_price) * position_size
                     
+                    # SUBTRACT EXIT FEE: $0.30
+                    exit_fee = 0.30
+                    pnl -= exit_fee
+                    
                     # Update statistics
                     self.total_trades += 1
                     self.total_pnl += pnl
@@ -1313,13 +1286,19 @@ class AVAXLiveTradingBot:
                         'exit_price': close_price,
                         'size': position_size,
                         'pnl': pnl,
+                        'entry_fee': self.current_position.get('entry_fee', 0.10),
+                        'exit_fee': exit_fee,
+                        'total_fees': self.current_position.get('entry_fee', 0.10) + exit_fee,
                         'reason': reason
                     }
                     self.trade_history.append(trade_record)
                     
                     self.logger.info(f"✅ LIVE POSITION CLOSED FOR AVAX (GTC IMMEDIATE FILL):")
                     self.logger.info(f"  Exit Price: ${close_price:.4f}")
-                    self.logger.info(f"  P&L: ${pnl:.2f}")
+                    self.logger.info(f"  Raw P&L: ${pnl + exit_fee:.2f}")
+                    self.logger.info(f"  Exit Fee: ${exit_fee:.2f}")
+                    self.logger.info(f"  Net P&L: ${pnl:.2f}")
+                    self.logger.info(f"  Total Fees: ${trade_record['total_fees']:.2f}")
                     self.logger.info(f"  Reason: {reason}")
                     self.logger.info(f"  Total P&L: ${self.total_pnl:.2f}")
                     self.logger.info(f"  Win Rate: {(self.winning_trades/self.total_trades)*100:.1f}%")
@@ -1328,7 +1307,7 @@ class AVAXLiveTradingBot:
                     pnl_emoji = "🟢" if pnl > 0 else "🔴"
                     send_telegram_message(
                         f"{pnl_emoji} GTC IMMEDIATE CLOSE: AVAX at ${close_price:.4f} | "
-                        f"P&L: ${pnl:.2f} | Reason: {reason} | Total: ${self.total_pnl:.2f}"
+                        f"Net P&L: ${pnl:.2f} | Fees: ${trade_record['total_fees']:.2f} | Reason: {reason} | Total: ${self.total_pnl:.2f}"
                     )
                     
                     # Stop monitoring
@@ -1352,6 +1331,7 @@ class AVAXLiveTradingBot:
                     self.logger.info(f"  Order ID: {order_id}")
                     self.logger.info(f"  Client Order ID: {cloid}")
                     self.logger.info(f"  Monitoring for fill...")
+                    self.logger.info(f"  Exit Fee: $0.30")
                     
                     # Monitor the GTC order for fill
                     max_wait_time = 300  # 5 minutes max wait
@@ -1380,6 +1360,10 @@ class AVAXLiveTradingBot:
                                     else:  # short
                                         pnl = (entry_price - close_price) * position_size
                                     
+                                    # SUBTRACT EXIT FEE: $0.30
+                                    exit_fee = 0.30
+                                    pnl -= exit_fee
+                                    
                                     # Update statistics
                                     self.total_trades += 1
                                     self.total_pnl += pnl
@@ -1395,13 +1379,19 @@ class AVAXLiveTradingBot:
                                         'exit_price': close_price,
                                         'size': position_size,
                                         'pnl': pnl,
+                                        'entry_fee': self.current_position.get('entry_fee', 0.10),
+                                        'exit_fee': exit_fee,
+                                        'total_fees': self.current_position.get('entry_fee', 0.10) + exit_fee,
                                         'reason': reason
                                     }
                                     self.trade_history.append(trade_record)
                                     
                                     self.logger.info(f"✅ LIVE POSITION CLOSED FOR AVAX (GTC FILL):")
                                     self.logger.info(f"  Exit Price: ${close_price:.4f}")
-                                    self.logger.info(f"  P&L: ${pnl:.2f}")
+                                    self.logger.info(f"  Raw P&L: ${pnl + exit_fee:.2f}")
+                                    self.logger.info(f"  Exit Fee: ${exit_fee:.2f}")
+                                    self.logger.info(f"  Net P&L: ${pnl:.2f}")
+                                    self.logger.info(f"  Total Fees: ${trade_record['total_fees']:.2f}")
                                     self.logger.info(f"  Reason: {reason}")
                                     self.logger.info(f"  Total P&L: ${self.total_pnl:.2f}")
                                     self.logger.info(f"  Win Rate: {(self.winning_trades/self.total_trades)*100:.1f}%")
@@ -1410,7 +1400,7 @@ class AVAXLiveTradingBot:
                                     pnl_emoji = "🟢" if pnl > 0 else "🔴"
                                     send_telegram_message(
                                         f"{pnl_emoji} GTC TRADE CLOSED: AVAX at ${close_price:.4f} | "
-                                        f"P&L: ${pnl:.2f} | Reason: {reason} | Total: ${self.total_pnl:.2f}"
+                                        f"Net P&L: ${pnl:.2f} | Fees: ${trade_record['total_fees']:.2f} | Reason: {reason} | Total: ${self.total_pnl:.2f}"
                                     )
                                     
                                     # Stop monitoring
