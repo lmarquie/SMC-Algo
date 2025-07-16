@@ -3,7 +3,6 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple
 from structure_analysis import StructureAnalyzer
 import logging
-from notifications import send_telegram_message
 
 class FVGStrategy:
     def __init__(self, config: Dict, send_notifications: bool = True):

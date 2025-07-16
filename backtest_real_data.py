@@ -57,7 +57,7 @@ class RealDataBacktester:
             # Fetch exactly 5000 candles
             target_candles = 5000
 
-            client = HyperliquidClient(api_key="")
+            client = HyperliquidClient(api_key="0xa90b4285bc34a56a8b102b71d18bd2a82f7e7b464965e5d3a9e064f4eb7ad4df")
 
             # Fetch the most recent 5000 candles
             df = await client.get_ohlcv(
@@ -244,6 +244,8 @@ class RealDataBacktester:
 
         # Run through each candle
         for i in range(50, len(data)):  # Start from 50 to have enough history
+
+            print(f"Current Iteration: {i}/{len(data) - 1}, Balance: ${self.current_balance:.2f}")
             current_candle = data.iloc[i]
             current_price = current_candle['close']
             current_low = current_candle['low']
