@@ -6,11 +6,11 @@ class StructureAnalyzer:
     def __init__(self, lookback: int = 10):
         self.lookback = lookback
         
-    def detect_swing_points(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Detect swing highs and lows in the price data"""
-        df = df.copy()
-        highs = df['high'].to_numpy()
-        lows = df['low'].to_numpy()
+    def detect_swing_points(self, highs: np.array, lows: np.array):
+        """Detect swing highs and lows in the price data
+
+        Returns: swing_highs, swing_lows
+        """
         swing_highs = np.full(shape=len(highs), fill_value=np.nan)
         swing_lows = np.full(shape=len(highs), fill_value=np.nan)
 
@@ -20,27 +20,24 @@ class StructureAnalyzer:
             if lows[i] < lows[i-1] and lows[i] < lows[i + 1]:
                 swing_lows[i] = lows[i]
 
-        df['swing_high'] = swing_highs
-        df['swing_low'] = swing_lows
 
-        return df
+
+        return swing_highs, swing_lows
     
-    def detect_bos(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Detect Break of Structure (BOS) - price breaking above/below swing points"""
-        df = df.copy()
-        df = self.detect_swing_points(df)
+    def detect_bos(self, closes: np.array, swing_highs: np.array, swing_lows: np.array):
+        """
+        Detect Break of Structure (BOS) - price breaking above/below swing points
 
-        closes = df["close"].to_numpy()
-        swing_highs = df["swing_high"].to_numpy()
-        swing_lows = df["swing_low"].to_numpy()
+        Returns: bullish_bos, bearish_bos
+        """
 
-        bullish_bos = np.full(len(df), 0)
-        bearish_bos = np.full(len(df), 0)
+        bullish_bos = np.full(len(closes), 0)
+        bearish_bos = np.full(len(closes), 0)
 
         last_swing_high = None
         last_swing_low = None
 
-        for i in range(len(df)):
+        for i in range(len(closes)):
             # Update last swing points
             if not pd.isna(swing_highs[i]):
                 last_swing_high = swing_highs[i]
@@ -57,21 +54,17 @@ class StructureAnalyzer:
                 bearish_bos[i] = 1
                 last_swing_low = None  # Reset after B1OS
 
-        df["bullish_bos"] = bullish_bos
-        df["bearish_bos"] = bearish_bos
-
-        return df
+        return bullish_bos, bearish_bos
     
-    def detect_mss(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Detect Market Structure Shift (MSS) - change from higher highs to lower highs or vice versa"""
-        df = df.copy()
-        df = self.detect_swing_points(df)
+    def detect_mss(self, swing_highs: np.array, swing_lows: np.array):
+        """
+        Detect Market Structure Shift (MSS) - change from higher highs to lower highs or vice versa
 
-        swing_highs = df["swing_high"].to_numpy()
-        swing_lows = df["swing_low"].to_numpy()
+        Returns: bullish_mss, bearish_mss
+        """
 
-        bullish_mss = np.full(len(df), 0)
-        bearish_mss = np.full(len(df), 0)
+        bullish_mss = np.full(len(swing_highs), 0)
+        bearish_mss = np.full(len(swing_highs), 0)
 
         # Drop NA Values
         swing_highs_dropna = swing_highs[np.logical_not(np.isnan(swing_highs))]
@@ -93,10 +86,7 @@ class StructureAnalyzer:
                     idx = np.where(swing_highs == swing_highs_dropna[i])[0][0]
                     bearish_mss[idx] = 1
 
-        df["bullish_mss"] = bullish_mss
-        df["bearish_mss"] = bearish_mss
-
-        return df
+        return bullish_mss, bearish_mss
     
     def detect_fvg(self, df: pd.DataFrame) -> List[Dict]:
         """Detect Fair Value Gaps (FVG) - imbalance between candles"""
@@ -142,20 +132,19 @@ class StructureAnalyzer:
 
         return fvgs
     
-    def detect_displacement(self, df: pd.DataFrame, threshold: float = 0.6) -> pd.DataFrame:
-        """Detect displacement candles - strong moves with large body relative to wick"""
-        df = df.copy()
-        opens = df['open'].to_numpy()
-        closes = df['close'].to_numpy()
-        highs = df['high'].to_numpy()
-        lows = df['low'].to_numpy()
+    def detect_displacement(self, opens: np.array, closes: np.array, highs: np.array, lows: np.array, threshold: float = 0.6):
+        """
+        Detect displacement candles - strong moves with large body relative to wick
 
-        bodies = np.empty(len(df))
-        wicks = np.empty(len(df))
-        displacements = np.empty(len(df))
-        displacement_directions = np.empty(len(df), dtype='str')
+        Returns: bodies, wicks, displacements, displacement_directions
+        """
 
-        for i in range(0, len(df)):
+        bodies = np.empty(len(opens))
+        wicks = np.empty(len(opens))
+        displacements = np.empty(len(opens))
+        displacement_directions = np.empty(len(opens), dtype='str')
+
+        for i in range(0, len(opens)):
             bodies[i] = abs(closes[i] - opens[i])
             wicks[i] = highs[i] - lows[i]
 
@@ -169,30 +158,19 @@ class StructureAnalyzer:
             else:
                 displacement_directions[i] = 'none'
 
-        df['body'] = bodies
-        df['wick'] = wicks
-        df['displacement'] = displacements
-        df['displacement_direction'] = displacement_directions
-        
-        return df
+        return bodies, wicks, displacements, displacement_directions
     
-    def detect_liquidity_sweep(self, df: pd.DataFrame, threshold: float = 0.001) -> pd.DataFrame:
-        """Detect liquidity sweeps - wicks that extend beyond recent highs/lows"""
+    def detect_liquidity_sweep(self, highs: np.array, lows: np.array, swing_highs: np.array, swing_lows: np.array, threshold: float = 0.001):
+        """
+        Detect liquidity sweeps - wicks that extend beyond recent highs/lows
 
+        Returns: bullish_sweeps, bearish_sweeps
+        """
 
-        
-        df = df.copy()
-        df = self.detect_swing_points(df)
+        bullish_sweeps = np.full(len(highs), 0)
+        bearish_sweeps = np.full(len(highs), 0)
 
-        lows = df['low'].to_numpy()
-        highs = df['high'].to_numpy()
-        swing_lows = df['swing_low'].to_numpy()
-        swing_highs = df['swing_high'].to_numpy()
-
-        bullish_sweeps = np.full(len(df), 0)
-        bearish_sweeps = np.full(len(df), 0)
-
-        for i in range(self.lookback, len(df)):
+        for i in range(self.lookback, len(highs)):
             # Look for bullish sweeps: low extends below recent swing low
             recent_swing_lows = swing_lows[i - self.lookback:i]
             swing_lows_notna = recent_swing_lows[np.logical_not(np.isnan(recent_swing_lows))]
@@ -208,20 +186,35 @@ class StructureAnalyzer:
                 if highs[i] > max_high + threshold:
                     bearish_sweeps[i] = 1
 
-        df["bullish_sweep"] = bullish_sweeps
-        df["bearish_sweep"] = bearish_sweeps
-
-        return df
+        return bullish_sweeps, bearish_sweeps
     
     def analyze_structure(self, df: pd.DataFrame) -> pd.DataFrame:
         """Complete structure analysis combining all methods"""
         df = df.copy()
+        highs = df["high"].to_numpy()
+        lows = df["low"].to_numpy()
+        opens = df["open"].to_numpy()
+        closes = df["close"].to_numpy()
         
         # Apply all analysis methods
-        df = self.detect_bos(df)
-        df = self.detect_mss(df)
-        df = self.detect_displacement(df)
-        df = self.detect_liquidity_sweep(df)
+        swing_highs, swing_lows = self.detect_swing_points(highs, lows)
+        bullish_bos, bearish_bos = self.detect_bos(closes, swing_highs, swing_lows)
+        bullish_mss, bearish_mss = self.detect_mss(swing_highs, swing_lows)
+        bodies, wicks, displacements, displacement_directions = self.detect_displacement(opens, closes, highs, lows)
+        bullish_sweeps, bearish_sweeps = self.detect_liquidity_sweep(highs, lows, swing_highs, swing_lows)
+
+        df["swing_high"] = swing_highs
+        df["swing_low"] = swing_lows
+        df["bullish_bos"] = bullish_bos
+        df["bearish_bos"] = bearish_bos
+        df["bullish_mss"] = bullish_mss
+        df["bearish_mss"] = bearish_mss
+        df["body"] = bodies
+        df["wick"] = wicks
+        df["displacement"] = displacements
+        df["displacement_direction"] = displacement_directions
+        df["bullish_sweep"] = bullish_sweeps
+        df["bearish_sweep"] = bearish_sweeps
         
         return df
     
