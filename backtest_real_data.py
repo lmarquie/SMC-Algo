@@ -100,8 +100,8 @@ class RealDataBacktester:
 
 
     def fetch_data(self, symbol):
-        df = self.fetch_polygon_data(symbol)
-        #df = self.fetch_hyperliquid_data(symbol)
+        #df = self.fetch_polygon_data(symbol)
+        df = self.fetch_hyperliquid_data(symbol)
         return df
 
 
@@ -138,7 +138,7 @@ class RealDataBacktester:
             current_high = current_candle['high']
 
             # Get data up to current point
-            current_data = data.iloc[max(0, i - 49):i + 1]
+            current_data = data.iloc[max(0, i - 99):i + 1]
 
             # Get corresponding HTF data
             current_time = current_candle.name
@@ -181,6 +181,11 @@ class RealDataBacktester:
         try:
             # Calculate position size
             risk_amount = abs(setup['entry_price'] - setup['stop_loss'])
+            min_stop_distance = setup['entry_price'] * 0.0015
+            if risk_amount < min_stop_distance:
+                print("RISK AMOUNT ADJUSTED TO MIN STOP DISTANCE")
+            risk_amount = max(risk_amount, min_stop_distance)
+
             position_size, adjusted_stop = self._calculate_position_size(risk_amount, setup['entry_price'], setup,
                                                                          setup['symbol'])
 
@@ -280,12 +285,11 @@ class RealDataBacktester:
         # Position size = Target Risk / Price Risk per Unit
         # This guarantees we risk exactly $150
         position_size = target_risk / risk_amount
-
         # Calculate position value (size × entry price)
         position_value = position_size * entry_price
 
         # Get leverage for this symbol
-        leverage = self.config['MAX_LEVERAGE'].get(symbol, 20)  # Default to 20x if not found
+        leverage = self.config['MAX_LEVERAGE'][symbol]
 
         # Capital constraints: $10,000 capital with leverage = max position value
         max_position_value = 10000 * leverage  # Dynamic based on symbol leverage

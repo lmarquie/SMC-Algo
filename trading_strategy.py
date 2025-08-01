@@ -143,7 +143,7 @@ class FVGStrategy:
         larger_trend = self.identify_larger_trend(htf_df, verbose)
         
         # Make trend confidence requirement stricter
-        if larger_trend['confidence'] < 0.50:  # Set to 50% confidence
+        if larger_trend['confidence'] < 0.60:  # Set to 50% confidence
             return None
         
         # Step 2: Detect pullback against the larger trend
@@ -409,8 +409,6 @@ class FVGStrategy:
             position['trailing_enabled'] = True
             rr_ratio = current_profit / current_risk if current_risk > 0 else 0
             self.logger.info(f"🎯 TRAILING STOP ENABLED! R:R = {rr_ratio:.2f} >= 1.0. Profit: ${current_profit:.4f}, Risk: ${current_risk:.4f}")
-            if self.send_notifications:
-                send_telegram_message(f"🎯 Trailing stop ENABLED for {position.get('symbol', 'UNKNOWN')} - R:R = {rr_ratio:.2f}")
         
         # Now update trailing stop based on structure
         df_analyzed = self.analyzer.analyze_structure(df)
@@ -463,10 +461,6 @@ class FVGStrategy:
                                 updated = True
                                 old_stop = position['stop_loss']
                                 self.logger.info(f"📈 TRAILING STOP TRIGGERED! ${old_stop:.4f} → ${new_stop:.4f} (swing low: ${best_swing_low:.4f}, confirmed after {confirmation_candles} candles)")
-                                if self.send_notifications:
-                                    send_telegram_message(
-                                        f"📈 TRAILING STOP MOVED for {position.get('symbol', 'UNKNOWN')}: ${old_stop:.4f} → ${new_stop:.4f}"
-                                    )
                         else:
                             self.logger.debug(f"📈 Trailing stop not updated - price crossed back below swing low ${best_swing_low:.4f}")
                         # Debug prints only when candles_after_swing exists
