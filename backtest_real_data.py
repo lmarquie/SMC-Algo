@@ -50,9 +50,9 @@ class RealDataBacktester:
         self.config['MAX_LEVERAGE'] = MAX_LEVERAGE
 
 
-    async def fetch_polygon_data(self, symbol: str, days: int):
+    async def fetch_polygon_data(self, symbol: str):
 
-        with open('market_data/recent_sol.json', 'r') as f:
+        with open('market_data/recent_avax.json', 'r') as f:
             aggs_list = json.load(f)
 
         df = pd.DataFrame()
@@ -72,7 +72,7 @@ class RealDataBacktester:
         return df
 
 
-    async def fetch_hyperliquid_data(self, symbol: str, days: int = 30):
+    async def fetch_hyperliquid_data(self, symbol: str):
         # Fetch exactly 5000 candles
         target_candles = 5000
 
@@ -85,8 +85,8 @@ class RealDataBacktester:
             "AVAX",
             timeframe="1m",
             limit=target_candles,
-            start_time=start_time,
-            end_time=end_time,
+            #start_time=start_time,
+            #end_time=end_time,
         )
 
         # Ensure we have exactly 5000 candles (or as many as available)
@@ -99,13 +99,13 @@ class RealDataBacktester:
         return df
 
 
-    def fetch_data(self, symbol, days):
-        df = self.fetch_polygon_data(symbol, days)
-        #df = self.fetch_hyperliquid_data(symbol, days)
+    def fetch_data(self, symbol):
+        df = self.fetch_polygon_data(symbol)
+        #df = self.fetch_hyperliquid_data(symbol)
         return df
 
 
-    async def run_backtest(self, symbol: str = "SOL", days: int = 7):
+    async def run_backtest(self, symbol):
         """Run backtest on real market data"""
         self.logger.info(f"Starting real data backtest for {symbol}...")
 
@@ -115,10 +115,10 @@ class RealDataBacktester:
         self.current_balance = self.initial_balance
 
         # Fetch real market data
-        data = await self.fetch_data(symbol, days)
+        data = await self.fetch_data(symbol)
 
         # Create HTF data by resampling
-        htf_data = data.resample('15T').agg({
+        htf_data = data.resample('15T').agg({ ### CHANGE TO 5 MINUTES
             'open': 'first',
             'high': 'max',
             'low': 'min',
@@ -130,19 +130,20 @@ class RealDataBacktester:
         # Run through each candle
         for i in range(50, len(data)):  # Start from 50 to have enough history
 
-            print(f"Current Iteration: {i}/{len(data) - 1}, Balance: ${self.current_balance:.2f}")
+            if i % 50 == 0:
+                print(f"Current Iteration: {i}/{len(data) - 1}, Balance: ${self.current_balance:.2f}")
             current_candle = data.iloc[i]
             current_price = current_candle['close']
             current_low = current_candle['low']
             current_high = current_candle['high']
 
             # Get data up to current point
-            current_data = data.iloc[max(0, i + 1 - 50):i + 1]
+            current_data = data.iloc[max(0, i - 49):i + 1]
 
             # Get corresponding HTF data
             current_time = current_candle.name
             htf_end_idx = htf_data.index.get_indexer([current_time], method='ffill')[0]
-            current_htf_data = htf_data.iloc[max(0, htf_end_idx + 1 - 50):htf_end_idx + 1]
+            current_htf_data = htf_data.iloc[max(0, htf_end_idx - 49):htf_end_idx + 1]
 
             # --- HARD STOP LOSS ENFORCEMENT ---
             if self.current_position:
@@ -160,7 +161,8 @@ class RealDataBacktester:
 
             # Check for new entry if no position
             if not self.current_position:
-                setup = self.strategy.check_entry_conditions(current_data, current_htf_data)
+                verbose = 1 if i % 50 == 0 else 0
+                setup = self.strategy.check_entry_conditions(current_data, current_htf_data, verbose)
                 if setup:
                     setup['symbol'] = symbol  # Add symbol to setup
                     self._open_position(setup, current_price, current_candle.name)
@@ -324,27 +326,7 @@ class RealDataBacktester:
         return position_size, setup['stop_loss']
 
 
-    def print_summary(self, results: Dict):
-        """Print backtest summary"""
-        print("\n" + "=" * 50)
-        print("REAL DATA BACKTEST SUMMARY")
-        print("=" * 50)
-        print(f"Initial Balance: ${results.get('initial_balance', 10000):,.2f}")
-        print(f"Final Balance: ${results.get('final_balance', 10000):,.2f}")
-        print(f"Total Return: {results.get('total_return', 0):.2f}%")
-        print(f"Total Trades: {results.get('total_trades', 0)}")
-        print(f"Winning Trades: {results.get('winning_trades', 0)}")
-        print(f"Losing Trades: {results.get('losing_trades', 0)}")
-        print(f"Win Rate: {results.get('win_rate', 0):.2f}%")
-        print(f"Average Win: ${results.get('avg_win', 0):.2f}")
-        print(f"Average Loss: ${results.get('avg_loss', 0):.2f}")
-        print(f"Profit Factor: {results.get('profit_factor', 0):.2f}")
-        print(f"Average R:R: {results.get('avg_rr', 0):.2f}")
-        print(f"Max Drawdown: {results.get('max_drawdown', 0):.2f}%")
-        print("=" * 50)
-
-
-async def run_real_data_backtest():
+async def run_real_data_backtest(symbol):
     """Run the real data backtest for all 3 cryptocurrencies"""
     from config import SYMBOLS, HYPERLIQUID_API_KEY, HYPERLIQUID_SUBACCOUNT, TIMEFRAME, HTF_TIMEFRAME, POSITION_SIZE, \
         BOS_LOOKBACK, DISPLACEMENT_THRESHOLD, STOP_LOSS_BUFFER, TAKE_PROFIT_RATIO, RISK_PER_TRADE, \
@@ -379,7 +361,6 @@ async def run_real_data_backtest():
     # Run backtest for all symbols
     all_trades = []
     all_equity_curves = []
-    symbol = "SOL"
 
     print(f"\n{'=' * 80}")
     print(f"📊 BACKTESTING {symbol}")
@@ -390,12 +371,14 @@ async def run_real_data_backtest():
     backtester.current_position = None
     backtester.trades = []
 
-    trades = await backtester.run_backtest(symbol=symbol, days=7)
+    trades = await backtester.run_backtest(symbol=symbol)
+    print(len(trades))
 
     # Add symbol info to trades
     for trade in trades:
         trade['symbol'] = symbol
-        all_trades.extend(trades)
+
+    all_trades.extend(trades)
 
     # Print individual symbol results
     if trades:
@@ -422,7 +405,7 @@ async def run_real_data_backtest():
     initial_balance = 10000
     total_trades = len(all_trades)
 
-    print(f"Symbols Traded: {', '.join(SYMBOLS)}")
+    print(f"Symbol Traded: {symbol}")
     print(f"Initial Balance: ${initial_balance:,.2f}")
     print(f"Total Trades: {total_trades}")
 
@@ -443,19 +426,7 @@ async def run_real_data_backtest():
         total_losses = abs(sum([t['pnl_dollar'] for t in losing_trades]))
         profit_factor = total_wins / total_losses if total_losses > 0 else 0
 
-        # Calculate average R:R ratio for all trades
-        rr_ratios = []
-        for trade in all_trades:
-            # Calculate risk (entry to stop loss distance)
-            risk_distance = abs(trade['entry_price'] - trade.get('stop_loss', trade['entry_price'] * 0.98)) * config["MAX_LEVERAGE"].get(symbol, 20)
-            # Calculate reward (actual P&L distance)
-            reward_distance = abs(trade['exit_price'] - trade['entry_price']) * trade["size"]
-
-            if risk_distance > 0:
-                rr_ratio = reward_distance / risk_distance
-                rr_ratios.append(rr_ratio)
-
-        avg_rr = np.mean(rr_ratios) if rr_ratios else 0
+        avg_rr = avg_win / 100
 
         print(f"Final Balance: ${final_balance:,.2f}")
         print(f"Total P&L: ${total_pnl:.2f}")
@@ -467,32 +438,6 @@ async def run_real_data_backtest():
         print(f"Average Loss: ${avg_loss:.2f}")
         print(f"Profit Factor: {profit_factor:.2f}")
         print(f"Average R:R: {avg_rr:.2f}")  # Add average R:R
-
-        # Calculate max drawdown from combined equity curve
-        if all_equity_curves:
-            peak = initial_balance
-            max_dd = 0
-            for point in all_equity_curves:
-                balance = point['equity']
-                if balance > peak:
-                    peak = balance
-                dd = (peak - balance) / peak * 100
-                if dd > max_dd:
-                    max_dd = dd
-            print(f"Max Drawdown: {max_dd:.2f}%")
-
-        # Print breakdown by symbol
-        print(f"\n📊 BREAKDOWN BY SYMBOL:")
-        for symbol in SYMBOLS:
-            symbol_trades = [t for t in all_trades if t['symbol'] == symbol]
-            if symbol_trades:
-                symbol_pnl = sum(t['pnl_dollar'] for t in symbol_trades)
-                symbol_wins = len([t for t in symbol_trades if t['pnl_dollar'] > 0])
-                symbol_win_rate = (symbol_wins / len(symbol_trades)) * 100
-                print(
-                    f"  {symbol}: {len(symbol_trades)} trades, ${symbol_pnl:.2f} P&L, {symbol_win_rate:.1f}% win rate")
-            else:
-                print(f"  {symbol}: No trades")
     else:
         print("No trades executed")
         print("Final Balance: $10,000.00")
@@ -502,5 +447,6 @@ async def run_real_data_backtest():
     print("=" * 70)
 
 
+SYMBOL = "AVAX"
 if __name__ == "__main__":
-    asyncio.run(run_real_data_backtest())
+    asyncio.run(run_real_data_backtest(SYMBOL))

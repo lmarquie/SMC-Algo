@@ -11,8 +11,8 @@ AVAX_OUTPUT = "market_data/recent_avax.json"
 SOL_OUTPUT = "market_data/recent_sol.json"
 ETH_OUTPUT = "market_data/recent_eth.json"
 
-TICKER = SOL_TICKER
-OUTPUT = SOL_OUTPUT
+TICKER = AVAX_TICKER
+OUTPUT = AVAX_OUTPUT
 
 client = RESTClient(api_key="GfF6dGScJa3pOZXtXt12UdAJukKcTd6K")
 
@@ -20,8 +20,8 @@ data = client.get_aggs(
     ticker=TICKER,
     multiplier=1,
     timespan="minute",
-    from_=from_date,
-    to=to_date,
+    from_="2025-07-01",
+    to="2025-07-30",
     limit=50_000,
 )
 
@@ -38,6 +38,7 @@ for i, agg in enumerate(data):
         "local_num": i
     }
     agg_list.append(agg_dict)
+
 
 with open(OUTPUT, 'w') as f:
     json.dump(agg_list, f, indent=4)

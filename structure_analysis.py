@@ -224,20 +224,3 @@ class StructureAnalyzer:
             return fvg['bottom'] <= current_price <= fvg['top']
         else:  # bearish
             return fvg['bottom'] <= current_price <= fvg['top']
-    
-    def get_htf_bias(self, df: pd.DataFrame) -> str:
-        """Determine higher timeframe bias based on recent structure"""
-        df_analyzed = self.analyze_structure(df)
-        
-        # Look at last 20 candles for bias
-        recent_df = df_analyzed.tail(20)
-        
-        bullish_bos_count = recent_df['bullish_bos'].sum()
-        bearish_bos_count = recent_df['bearish_bos'].sum()
-        
-        if bullish_bos_count > bearish_bos_count:
-            return 'bullish'
-        elif bearish_bos_count > bullish_bos_count:
-            return 'bearish'
-        else:
-            return 'neutral' 

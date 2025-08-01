@@ -44,21 +44,18 @@ class FVGStrategy:
         self.active_fvgs = active_fvgs
         return active_fvgs
     
-    def identify_larger_trend(self, htf_df: pd.DataFrame) -> Dict:
+    def identify_larger_trend(self, htf_df: pd.DataFrame, verbose=0) -> Dict:
         """Identify the larger trend direction and strength"""
         if len(htf_df) < 20:
             return {'trend': 'neutral', 'strength': 0, 'confidence': 0}
         
         htf_analyzed = self.analyzer.analyze_structure(htf_df)
         
-        # Look at recent structure (last 100 candles)
-        recent_df = htf_analyzed.tail(100)
-        
         # Count bullish vs bearish structure
-        bullish_bos_count = recent_df['bullish_bos'].sum()
-        bearish_bos_count = recent_df['bearish_bos'].sum()
-        bullish_mss_count = recent_df['bullish_mss'].sum()
-        bearish_mss_count = recent_df['bearish_mss'].sum()
+        bullish_bos_count = htf_analyzed['bullish_bos'].sum()
+        bearish_bos_count = htf_analyzed['bearish_bos'].sum()
+        bullish_mss_count = htf_analyzed['bullish_mss'].sum()
+        bearish_mss_count = htf_analyzed['bearish_mss'].sum()
         
         # Weighted trend strength: BOS gets 2x weight
         bullish_strength = 2 * bullish_bos_count + bullish_mss_count
@@ -73,21 +70,22 @@ class FVGStrategy:
             trend = 'downtrend'
             strength = bearish_strength
             confidence = bearish_strength / (bullish_strength + bearish_strength)
-        else:
+        else: ### REMOVE NEUTRAL
             trend = 'neutral'
             strength = max(bullish_strength, bearish_strength)
             confidence = 0.5
-                
-        print("DEBUG:", {
-            "bullish_bos": bullish_bos_count,
-            "bearish_bos": bearish_bos_count,
-            "bullish_mss": bullish_mss_count,
-            "bearish_mss": bearish_mss_count,
-            "bullish_strength": bullish_strength,
-            "bearish_strength": bearish_strength,
-            "trend": trend,
-            "confidence": confidence
-        })
+
+        if verbose:
+            print("DEBUG:", {
+                "bullish_bos": bullish_bos_count,
+                "bearish_bos": bearish_bos_count,
+                "bullish_mss": bullish_mss_count,
+                "bearish_mss": bearish_mss_count,
+                "bullish_strength": bullish_strength,
+                "bearish_strength": bearish_strength,
+                "trend": trend,
+                "confidence": confidence
+            })
         
         return {
             'trend': trend,
@@ -99,6 +97,9 @@ class FVGStrategy:
     
     def detect_pullback(self, ltf_df: pd.DataFrame, larger_trend: str) -> Optional[Dict]:
         """Detect pullbacks/retracements against the larger trend"""
+
+        ### MAYBE CHANGE HOW PULLBACK IS IDENFITIED
+
         if len(ltf_df) < 15:
             return None
         
@@ -133,13 +134,13 @@ class FVGStrategy:
         
         return None
     
-    def check_entry_conditions(self, df: pd.DataFrame, htf_df: pd.DataFrame) -> Optional[Dict]:
+    def check_entry_conditions(self, df: pd.DataFrame, htf_df: pd.DataFrame, verbose=0) -> Optional[Dict]:
         """Check if entry conditions are met for the trend continuation strategy"""
         if len(df) < 20:
             return None
         
         # Step 1: Identify larger trend
-        larger_trend = self.identify_larger_trend(htf_df)
+        larger_trend = self.identify_larger_trend(htf_df, verbose)
         
         # Make trend confidence requirement stricter
         if larger_trend['confidence'] < 0.50:  # Set to 50% confidence
@@ -523,10 +524,6 @@ class FVGStrategy:
                                 updated = True
                                 old_stop = position['stop_loss']
                                 self.logger.info(f"📉 TRAILING STOP TRIGGERED! ${old_stop:.4f} → ${new_stop:.4f} (swing high: ${best_swing_high:.4f}, confirmed after {confirmation_candles} candles)")
-                                if self.send_notifications:
-                                    send_telegram_message(
-                                        f"📉 TRAILING STOP MOVED for {position.get('symbol', 'UNKNOWN')}: ${old_stop:.4f} → ${new_stop:.4f}"
-                                    )
                         else:
                             self.logger.debug(f"📉 Trailing stop not updated - price crossed back above swing high ${best_swing_high:.4f}")
                         # Debug prints only when candles_after_swing exists
@@ -541,92 +538,4 @@ class FVGStrategy:
         
         print("Current stop:", position['stop_loss'])
         
-        return updated 
-
-    def update_momentum_trailing_stop(self, df: pd.DataFrame, position: Dict) -> bool:
-        """Update trailing stop for momentum strategy - enables trailing immediately"""
-        if not position:
-            return False
-        
-        current_price = df['close'].iloc[-1]
-        
-        # For momentum strategy, enable trailing immediately (no R:R requirement)
-        if 'trailing_enabled' not in position:
-            position['trailing_enabled'] = True
-            position['original_stop_loss'] = position['stop_loss']
-            self.logger.info(f"✅ MOMENTUM TRAILING ENABLED immediately!")
-            if self.send_notifications:
-                send_telegram_message(f"✅ Momentum trailing enabled for {position.get('symbol', 'UNKNOWN')}")
-        
-        # Update trailing stop based on structure
-        df_analyzed = self.analyzer.analyze_structure(df)
-        last_stop_update_idx = position.get('last_stop_update_idx', None)
-        updated = False
-        
-        if position['direction'] == 'long':
-            # Find all swing lows since last stop update
-            recent_swings = df_analyzed.tail(30)  # Shorter lookback for momentum
-            swing_lows = recent_swings[recent_swings['swing_low'].notna()]
-            if last_stop_update_idx is not None:
-                swing_lows = swing_lows[swing_lows.index > last_stop_update_idx]
-            
-            if not swing_lows.empty:
-                # Find the HIGHEST swing low (most favorable for longs)
-                best_swing_low = swing_lows['swing_low'].max()
-                # Tighter stop distance for momentum
-                new_stop = best_swing_low - self.config.get('STOP_LOSS_BUFFER', 0.005)
-                # Only move stop up (more favorable) - NEVER move down for longs
-                if new_stop > position['stop_loss']:
-                    # Simpler confirmation for momentum - just check if price stayed above swing low
-                    swing_low_idx = swing_lows.index[-1]
-                    candles_after_swing = df_analyzed.loc[swing_low_idx:].tail(3)  # Check 3 candles after
-                    
-                    # Check if price stayed above the swing low
-                    price_stayed_above = all(candle['low'] > best_swing_low for _, candle in candles_after_swing.iterrows())
-                    
-                    if price_stayed_above:
-                        if position['stop_loss'] != new_stop:
-                            old_stop = position['stop_loss']
-                            position['stop_loss'] = new_stop
-                            position['last_stop_update_idx'] = swing_lows.index[-1]
-                            updated = True
-                            self.logger.info(f"🔄 MOMENTUM TRAILING: ${old_stop:.4f} → ${new_stop:.4f}")
-                            if self.send_notifications:
-                                send_telegram_message(
-                                    f"🔄 Momentum trailing: {position.get('symbol', 'UNKNOWN')} ${old_stop:.4f} → ${new_stop:.4f}"
-                                )
-        
-        else:  # short
-            # Find all swing highs since last stop update
-            recent_swings = df_analyzed.tail(30)  # Shorter lookback for momentum
-            swing_highs = recent_swings[recent_swings['swing_high'].notna()]
-            if last_stop_update_idx is not None:
-                swing_highs = swing_highs[swing_highs.index > last_stop_update_idx]
-            
-            if not swing_highs.empty:
-                # Find the LOWEST swing high (most favorable for shorts)
-                best_swing_high = swing_highs['swing_high'].min()
-                # Tighter stop distance for momentum
-                new_stop = best_swing_high + self.config.get('STOP_LOSS_BUFFER', 0.005)
-                # Only move stop down (more favorable) - NEVER move up for shorts
-                if new_stop < position['stop_loss']:
-                    # Simpler confirmation for momentum - just check if price stayed below swing high
-                    swing_high_idx = swing_highs.index[-1]
-                    candles_after_swing = df_analyzed.loc[swing_high_idx:].tail(3)  # Check 3 candles after
-                    
-                    # Check if price stayed below the swing high
-                    price_stayed_below = all(candle['high'] < best_swing_high for _, candle in candles_after_swing.iterrows())
-                    
-                    if price_stayed_below:
-                        if position['stop_loss'] != new_stop:
-                            old_stop = position['stop_loss']
-                            position['stop_loss'] = new_stop
-                            position['last_stop_update_idx'] = swing_highs.index[-1]
-                            updated = True
-                            self.logger.info(f"🔄 MOMENTUM TRAILING: ${old_stop:.4f} → ${new_stop:.4f}")
-                            if self.send_notifications:
-                                send_telegram_message(
-                                    f"🔄 Momentum trailing: {position.get('symbol', 'UNKNOWN')} ${old_stop:.4f} → ${new_stop:.4f}"
-                                )
-        
-        return updated 
+        return updated
