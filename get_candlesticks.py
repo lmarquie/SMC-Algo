@@ -20,8 +20,8 @@ data = client.get_aggs(
     ticker=TICKER,
     multiplier=1,
     timespan="minute",
-    from_="2025-07-01",
-    to="2025-07-30",
+    from_="2025-02-01",
+    to="2025-02-28",
     limit=50_000,
 )
 
@@ -43,4 +43,4 @@ for i, agg in enumerate(data):
 with open(OUTPUT, 'w') as f:
     json.dump(agg_list, f, indent=4)
 
-print(f"Retrieved {len(agg_list)} candles")
+print(f"Retrieved {len(agg_list)} candles of {TICKER}")

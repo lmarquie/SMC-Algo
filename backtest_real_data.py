@@ -17,6 +17,9 @@ from hyperliquid.info import Info
 from hyperliquid.utils import constants
 from hyperliquid_client import HyperliquidClient
 
+plot_times = np.array([])
+plot_opens = np.array([])
+
 
 class RealDataBacktester:
     def __init__(self, config: Dict):
@@ -52,7 +55,7 @@ class RealDataBacktester:
 
     async def fetch_polygon_data(self, symbol: str):
 
-        with open('market_data/recent_avax.json', 'r') as f:
+        with open(f'market_data/recent_{symbol.lower()}.json', 'r') as f:
             aggs_list = json.load(f)
 
         df = pd.DataFrame()
@@ -82,7 +85,7 @@ class RealDataBacktester:
 
         # Fetch the most recent 5000 candles
         df = await client.get_ohlcv(
-            "AVAX",
+            f"{symbol}",
             timeframe="1m",
             limit=target_candles,
             #start_time=start_time,
@@ -100,8 +103,8 @@ class RealDataBacktester:
 
 
     def fetch_data(self, symbol):
-        #df = self.fetch_polygon_data(symbol)
-        df = self.fetch_hyperliquid_data(symbol)
+        df = self.fetch_polygon_data(symbol)
+        #df = self.fetch_hyperliquid_data(symbol)
         return df
 
 
@@ -449,6 +452,7 @@ async def run_real_data_backtest(symbol):
         print("Total Return: 0.00%")
 
     print("=" * 70)
+    print(f"FVGs: {backtester.strategy.fvg_count}")
 
 
 SYMBOL = "AVAX"

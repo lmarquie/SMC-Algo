@@ -101,7 +101,7 @@ class StructureAnalyzer:
             c2_low = lows[i - 1]
             c3_low = lows[i]
 
-            if c2_low > c1_high and c3_low > c1_high:
+            if c3_low > c1_high:
                 fvg = {
                     'type': 'bullish',
                     'start_idx': i - 1,
@@ -118,7 +118,7 @@ class StructureAnalyzer:
                 c2_high = highs[i - 1]
                 c3_high = highs[i]
 
-                if c2_high < c1_low and c3_high < c1_low:
+                if c3_high < c1_low:
                     fvg = {
                         'type': 'bearish',
                         'start_idx': i - 1,

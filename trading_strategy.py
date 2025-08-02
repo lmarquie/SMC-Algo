@@ -4,6 +4,8 @@ from typing import Dict, List, Optional, Tuple
 from structure_analysis import StructureAnalyzer
 import logging
 
+
+
 class FVGStrategy:
     def __init__(self, config: Dict, send_notifications: bool = True):
         self.config = config
@@ -12,6 +14,7 @@ class FVGStrategy:
         self.active_fvgs = []
         self.last_analysis_time = None
         self.current_position = None
+        self.fvg_count = 0
         
         # Setup logging
         logging.basicConfig(level=logging.INFO)
@@ -19,14 +22,19 @@ class FVGStrategy:
         
     def update_fvgs(self, df: pd.DataFrame) -> List[Dict]:
         """Update and maintain active FVGs"""
-        new_fvgs = self.analyzer.detect_fvg(df)
+
+        recent_fvgs = self.analyzer.detect_fvg(df)
+        recent_fvgs = [fvg for fvg in recent_fvgs if fvg['end_idx'] >= len(df) - 10]
+        existing_start_idxs = [fvg['start_idx'] for fvg in self.active_fvgs]
+        new_fvgs = [fvg for fvg in recent_fvgs if (not fvg['start_idx'] in existing_start_idxs)]
+        self.fvg_count += len(new_fvgs)
         current_price = df['close'].iloc[-1]
         
         # Filter out old FVGs and mark filled ones
         active_fvgs = []
-        for fvg in self.active_fvgs + new_fvgs:
+        for fvg in self.active_fvgs + recent_fvgs:
             # Check if FVG is still valid (not too old)
-            if fvg['end_idx'] >= len(df) - 50:  # Keep FVGs from last 50 candles
+            if fvg['end_idx'] >= len(df) - 10:  # Keep FVGs from last 50 candles
                 # Check if FVG has been filled
                 if not fvg['filled']:
                     if fvg['type'] == 'bullish':
@@ -104,7 +112,7 @@ class FVGStrategy:
             return None
         
         ltf_analyzed = self.analyzer.analyze_structure(ltf_df)
-        recent_df = ltf_analyzed.tail(15)
+        recent_df = ltf_analyzed.tail(10)
         
         if larger_trend == 'uptrend':
             # Look for bearish pullback in uptrend
@@ -143,35 +151,35 @@ class FVGStrategy:
         larger_trend = self.identify_larger_trend(htf_df, verbose)
         
         # Make trend confidence requirement stricter
-        if larger_trend['confidence'] < 0.60:  # Set to 50% confidence
+        if larger_trend['confidence'] < 0.50:  # Set to 50% confidence
             return None
         
         # Step 2: Detect pullback against the larger trend
-        pullback = self.detect_pullback(df, larger_trend['trend'])
+        #pullback = self.detect_pullback(df, larger_trend['trend'])
         
-        if not pullback:
-            return None
+        #if not pullback:
+        #    return None
         
         # Step 3: Look for reversal of the pullback
         current_price = df['close'].iloc[-1]
         active_fvgs = self.update_fvgs(df)
         
-        if larger_trend['trend'] == 'uptrend' and pullback['type'] == 'bearish_pullback':
+        if larger_trend['trend'] == 'uptrend': #and pullback['type'] == 'bearish_pullback':
             # Look for bullish reversal to continue uptrend
-            setup = self._check_bullish_reversal(df, active_fvgs, current_price, larger_trend, pullback)
+            setup = self._check_bullish_reversal(df, active_fvgs, current_price, larger_trend)
             if setup:
                 return setup
         
-        elif larger_trend['trend'] == 'downtrend' and pullback['type'] == 'bullish_pullback':
+        elif larger_trend['trend'] == 'downtrend': #and pullback['type'] == 'bullish_pullback':
             # Look for bearish reversal to continue downtrend
-            setup = self._check_bearish_reversal(df, active_fvgs, current_price, larger_trend, pullback)
+            setup = self._check_bearish_reversal(df, active_fvgs, current_price, larger_trend)
             if setup:
                 return setup
         
         return None
     
     def _check_bullish_reversal(self, df: pd.DataFrame, fvgs: List[Dict], current_price: float, 
-                               larger_trend: Dict, pullback: Dict) -> Optional[Dict]:
+                               larger_trend: Dict) -> Optional[Dict]:
         """Check for bullish reversal to continue uptrend"""
         # Look for bullish FVGs that price is touching
         bullish_fvgs = [fvg for fvg in fvgs if fvg['type'] == 'bullish']
@@ -180,7 +188,7 @@ class FVGStrategy:
             if self.analyzer.check_fvg_touch(current_price, fvg):
                 # Analyze the DataFrame to get structure columns
                 df_analyzed = self.analyzer.analyze_structure(df)
-                recent_df = df_analyzed.tail(10)  # Increased from 5 to 10 candles - more opportunities
+                recent_df = df_analyzed.tail(25)  # Increased from 5 to 10 candles - more opportunities
                 
                 # Look for bullish BOS or MSS (reversal signal) - make stricter
                 has_bullish_reversal = (
@@ -190,9 +198,6 @@ class FVGStrategy:
                 
                 # Look for displacement (strong reversal move) - require this now
                 has_displacement = recent_df['displacement'].sum() > 0
-                
-                # Check for liquidity sweep (optional but preferred)
-                has_sweep = recent_df['bullish_sweep'].sum() > 0
                 
                 # Entry conditions for trend continuation - stricter
                 if has_bullish_reversal and has_displacement:  # Now require both
@@ -215,14 +220,13 @@ class FVGStrategy:
                         'fvg': fvg,
                         'larger_trend': larger_trend['trend'],
                         'trend_confidence': larger_trend['confidence'],
-                        'pullback_type': pullback['type'],
                         'reason': f'Uptrend continuation: Bearish pullback + Bullish reversal + Displacement + FVG. Trend confidence: {larger_trend["confidence"]:.2f}'
                     }
         
         return None
     
     def _check_bearish_reversal(self, df: pd.DataFrame, fvgs: List[Dict], current_price: float, 
-                               larger_trend: Dict, pullback: Dict) -> Optional[Dict]:
+                               larger_trend: Dict) -> Optional[Dict]:
         """Check for bearish reversal to continue downtrend"""
         # Look for bearish FVGs that price is touching
         bearish_fvgs = [fvg for fvg in fvgs if fvg['type'] == 'bearish']
@@ -231,7 +235,7 @@ class FVGStrategy:
             if self.analyzer.check_fvg_touch(current_price, fvg):
                 # Analyze the DataFrame to get structure columns
                 df_analyzed = self.analyzer.analyze_structure(df)
-                recent_df = df_analyzed.tail(10)  # Increased from 5 to 10 candles - more opportunities
+                recent_df = df_analyzed.tail(25)  # Increased from 5 to 10 candles - more opportunities
                 
                 # Look for bearish BOS or MSS (reversal signal) - make stricter
                 has_bearish_reversal = (
@@ -266,7 +270,6 @@ class FVGStrategy:
                         'fvg': fvg,
                         'larger_trend': larger_trend['trend'],
                         'trend_confidence': larger_trend['confidence'],
-                        'pullback_type': pullback['type'],
                         'reason': f'Downtrend continuation: Bullish pullback + Bearish reversal + Displacement + FVG. Trend confidence: {larger_trend["confidence"]:.2f}'
                     }
         
