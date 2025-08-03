@@ -78,7 +78,7 @@ class RealDataBacktester:
 
         # Convert timestamp to datetime and set as index
         df['T'] = pd.to_datetime(df['T'], unit='ms')
-        df.set_index('T', inplace=True)
+        df.set_index('T', inplace=True, drop=False)
 
         self.logger.info(f"✅ Successfully loaded {len(df)} candles from JSON file for {symbol}")
         return df
@@ -89,23 +89,21 @@ class RealDataBacktester:
         target_candles = 5000
 
         client = HyperliquidClient(api_key="0xa90b4285bc34a56a8b102b71d18bd2a82f7e7b464965e5d3a9e064f4eb7ad4df")
-        start_time = int(datetime.strptime("2025-07-29", "%Y-%m-%d").timestamp() * 1000)
-        end_time = int(datetime.strptime("2025-07-30", "%Y-%m-%d").timestamp() * 1000)
 
         # Fetch the most recent 5000 candles
         df = await client.get_ohlcv(
             f"{symbol}",
             timeframe="1m",
             limit=target_candles,
-            #start_time=start_time,
-            #end_time=end_time,
         )
 
         # Ensure we have exactly 5000 candles (or as many as available)
         if len(df) > target_candles:
             df = df.tail(target_candles)
 
+        df['T'] = pd.to_datetime(df['T'], unit='ms')
         df = df[["open", "high", "low", "close", "T"]]
+        df.set_index('T', inplace=True, drop=False)
 
         self.logger.info(f"✅ Successfully fetched {len(df)} real candles for {symbol}")
         return df
@@ -149,7 +147,8 @@ class RealDataBacktester:
             current_low = current_candle['low']
             current_high = current_candle['high']
 
-            self.plot_times = np.append(self.plot_times, current_candle["T"])
+
+            self.plot_times = np.append(self.plot_times, current_candle['T'].timestamp())
             self.plot_opens = np.append(self.plot_opens, current_candle['open'])
 
             # Get data up to current point
@@ -158,7 +157,7 @@ class RealDataBacktester:
             # Get corresponding HTF data
             current_time = current_candle.name
             htf_end_idx = htf_data.index.get_indexer([current_time], method='ffill')[0]
-            current_htf_data = htf_data.iloc[max(0, htf_end_idx - 49):htf_end_idx + 1]
+            current_htf_data = htf_data.iloc[max(0, htf_end_idx - 24):htf_end_idx + 1]
 
             # --- HARD STOP LOSS ENFORCEMENT ---
             if self.current_position:
@@ -170,11 +169,11 @@ class RealDataBacktester:
 
                 # Check if stop loss is hit
                 if direction == 'long' and current_low <= stop_loss:
-                    self._close_position(stop_loss, current_candle.name, "Stop Loss")
+                    self._close_position(stop_loss, current_candle['T'], "Stop Loss")
                     self.close_times = np.append(self.close_times, i-50)
                     self.close_values = np.append(self.close_values, current_candle['open'])
                 elif direction == 'short' and current_high >= stop_loss:
-                    self._close_position(stop_loss, current_candle.name, "Stop Loss")
+                    self._close_position(stop_loss, current_candle['T'], "Stop Loss")
                     self.close_times = np.append(self.close_times, i - 50)
                     self.close_values = np.append(self.close_values, current_candle['open'])
 
@@ -185,7 +184,7 @@ class RealDataBacktester:
                 if setup:
                     setup['symbol'] = symbol  # Add symbol to setup
 
-                    self._open_position(setup, current_price, current_candle.name)
+                    self._open_position(setup, current_price, current_candle['T'])
                     self.open_times = np.append(self.open_times, i-50)
                     self.open_values = np.append(self.open_values, current_candle['open'])
 
@@ -477,16 +476,16 @@ async def run_real_data_backtest(symbol):
         plt.plot(backtester.plot_times, backtester.plot_opens, color="blue", linewidth=1)
 
         for trade in winning_trades:
-            entry_idx = trade["entry_time"].timestamp() * 1000
-            exit_idx = trade["exit_time"].timestamp() * 1000
+            entry_idx = trade["entry_time"].timestamp()
+            exit_idx = trade["exit_time"].timestamp()
 
             plt.plot([entry_idx, exit_idx],  # x-coordinates of the two points
                      [trade["entry_price"], trade["exit_price"]],  # y-coordinates of the two points
                      color='green', linestyle='--', linewidth=5)
 
         for trade in losing_trades:
-            entry_idx = trade["entry_time"].timestamp() * 1000
-            exit_idx = trade["exit_time"].timestamp() * 1000
+            entry_idx = trade["entry_time"].timestamp()
+            exit_idx = trade["exit_time"].timestamp()
 
             plt.plot([entry_idx, exit_idx],  # x-coordinates of the two points
                      [trade["entry_price"], trade["exit_price"]],  # y-coordinates of the two points
@@ -500,19 +499,48 @@ async def run_real_data_backtest(symbol):
         os.makedirs("trades", exist_ok=True)
         df = await backtester.fetch_data(symbol)
         for i, trade in enumerate(all_trades):
-            entry_idx = int((trade['entry_time'].timestamp() * 1000 - backtester.plot_times[0]) / 60_000)
-            exit_idx = int((trade['exit_time'].timestamp() * 1000 - backtester.plot_times[0]) / 60_000)
+            entry_idx = df.index.get_loc(trade['entry_time'])
+            exit_idx = df.index.get_loc(trade['exit_time'])
 
-            plt.style.use('_mpl-gallery')
+            plt.figure(figsize=(15, 8))
             plt.margins(x=0.1)
             plt.tight_layout()
             fig, ax = plt.subplots()
-            for idx in range(entry_idx, exit_idx):
+            for idx in range(entry_idx-20, exit_idx+1):
                 candle = df.iloc[idx]
                 boxplot_data = [[candle["low"], candle["open"], candle["close"], candle["high"]]]
-                ax.boxplot(boxplot_data, positions=[(idx-entry_idx+1) * 2], widths=1.5, showfliers=False, manage_ticks=True, whis=float('inf'))
+                boxprops = {}
 
-            plt.savefig(f"trades/trade_{entry_idx}.png", dpi=600, bbox_inches="tight")
+                if idx == entry_idx:
+                    boxprops = {'facecolor': 'green', 'alpha': 1}
+                elif idx == exit_idx:
+                    boxprops = {'facecolor': 'red', 'alpha': 1}
+                elif idx > entry_idx:
+                    if candle["close"] >= candle["open"]:
+                        boxprops = {'facecolor': 'green', 'alpha': 0.4}
+                    else:
+                        boxprops = {'facecolor': 'red', 'alpha': 0.4}
+                else:
+                    boxprops = {'facecolor': 'white', 'alpha': 1.0}
+
+                ax.boxplot(
+                    boxplot_data,
+                    positions=[(idx-entry_idx+1) * 3],
+                    widths=2,
+                    showfliers=False,
+                    manage_ticks=True,
+                    medianprops={'linewidth': 0},
+                    boxprops=boxprops,
+                    patch_artist=True,
+                )
+
+            trade_direction = trade['direction'].upper()
+            trade_result = "WIN" if trade['pnl_dollar'] > 0 else "LOSS"
+            plt.title(f"Trade #{entry_idx}: {trade_direction} - {trade_result} (${trade['pnl_dollar']:.2f})")
+
+            ax.tick_params(axis='both', labelsize=6)
+            plt.tight_layout()
+            plt.savefig(f"trades/trade_{i+1}.png", dpi=600, bbox_inches="tight")
             plt.close("all")
 
     else:

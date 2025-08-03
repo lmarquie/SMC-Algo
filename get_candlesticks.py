@@ -14,13 +14,13 @@ AVAX_OUTPUT = "market_data/recent_avax.json"
 SOL_OUTPUT = "market_data/recent_sol.json"
 ETH_OUTPUT = "market_data/recent_eth.json"
 
-TICKER = AVAX_TICKER
-OUTPUT = AVAX_OUTPUT
+TICKER = SOL_TICKER
+OUTPUT = SOL_OUTPUT
 
 client = RESTClient(api_key="GfF6dGScJa3pOZXtXt12UdAJukKcTd6K")
 
 # month formatted like 4_2025 - month number, underscore, year 4 digits
-def get_month_data(symbol, months):
+def get_month_data(months):
     sleep_time = 10
     for date in months:
         success = False
@@ -55,7 +55,7 @@ months = [
     "5_2025",
     "6_2025",
 ]
-get_month_data("AVAX", months)
+get_month_data(months)
 
 agg_list = []
 for i, agg in enumerate(data):

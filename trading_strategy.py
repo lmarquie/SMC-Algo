@@ -26,7 +26,7 @@ class FVGStrategy:
         """Update and maintain active FVGs"""
 
         recent_fvgs = self.analyzer.detect_fvg(df)
-        recent_fvgs = [fvg for fvg in recent_fvgs if fvg['end_idx'] >= len(df) - 10]
+        recent_fvgs = [fvg for fvg in recent_fvgs if fvg['end_idx'] >= len(df) - 20]
         existing_start_idxs = [fvg['start_idx'] for fvg in self.active_fvgs]
         new_fvgs = [fvg for fvg in recent_fvgs if (not fvg['start_idx'] in existing_start_idxs)]
         self.fvg_count += len(new_fvgs)
@@ -111,7 +111,7 @@ class FVGStrategy:
         larger_trend = self.identify_larger_trend(htf_df, verbose)
         
         # Make trend confidence requirement stricter
-        if larger_trend['confidence'] < 0.50:  # Set to 50% confidence
+        if larger_trend['confidence'] < 0.60:  # Set to 60% confidence
             return None
 
         # Step 3: Look for reversal of the pullback
