@@ -113,80 +113,24 @@ class StructureAnalyzer:
                 }
                 fvgs.append(fvg)
 
-                # Bearish FVG: gap between candle 1's low and candle 3's high
-                c1_low = lows[i - 2]
-                c2_high = highs[i - 1]
-                c3_high = highs[i]
+            # Bearish FVG: gap between candle 1's low and candle 3's high
+            c1_low = lows[i - 2]
+            c2_high = highs[i - 1]
+            c3_high = highs[i]
 
-                if c3_high < c1_low:
-                    fvg = {
-                        'type': 'bearish',
-                        'start_idx': i - 1,
-                        'end_idx': i,
-                        'top': c1_low,
-                        'bottom': c2_high,
-                        'strength': c1_low - c2_high,
-                        'filled': False
-                    }
-                    fvgs.append(fvg)
+            if c3_high < c1_low:
+                fvg = {
+                    'type': 'bearish',
+                    'start_idx': i - 1,
+                    'end_idx': i,
+                    'top': c1_low,
+                    'bottom': c2_high,
+                    'strength': c1_low - c2_high,
+                    'filled': False
+                }
+                fvgs.append(fvg)
 
         return fvgs
-    
-    def detect_displacement(self, opens: np.array, closes: np.array, highs: np.array, lows: np.array, threshold: float = 0.6):
-        """
-        Detect displacement candles - strong moves with large body relative to wick
-
-        Returns: bodies, wicks, displacements, displacement_directions
-        """
-
-        bodies = np.empty(len(opens))
-        wicks = np.empty(len(opens))
-        displacements = np.empty(len(opens))
-        displacement_directions = np.empty(len(opens), dtype='str')
-
-        for i in range(0, len(opens)):
-            bodies[i] = abs(closes[i] - opens[i])
-            wicks[i] = highs[i] - lows[i]
-
-            if wicks[i] > 0:
-                displacements[i] = bodies[i] / wicks[i] > threshold
-            else:
-                displacements[i] = False
-
-            if displacements[i]:
-                displacement_directions[i] = 'bullish' if closes[i] > opens[i] else 'bearish'
-            else:
-                displacement_directions[i] = 'none'
-
-        return bodies, wicks, displacements, displacement_directions
-    
-    def detect_liquidity_sweep(self, highs: np.array, lows: np.array, swing_highs: np.array, swing_lows: np.array, threshold: float = 0.001):
-        """
-        Detect liquidity sweeps - wicks that extend beyond recent highs/lows
-
-        Returns: bullish_sweeps, bearish_sweeps
-        """
-
-        bullish_sweeps = np.full(len(highs), 0)
-        bearish_sweeps = np.full(len(highs), 0)
-
-        for i in range(self.lookback, len(highs)):
-            # Look for bullish sweeps: low extends below recent swing low
-            recent_swing_lows = swing_lows[i - self.lookback:i]
-            swing_lows_notna = recent_swing_lows[np.logical_not(np.isnan(recent_swing_lows))]
-            if len(swing_lows_notna) > 0:
-                min_low = swing_lows_notna.min()
-                if lows[i] < min_low - threshold:
-                    bullish_sweeps[i] = 1
-
-            recent_swing_highs = swing_highs[i - self.lookback:i]
-            swing_highs_notna = recent_swing_highs[np.logical_not(np.isnan(recent_swing_highs))]
-            if len(swing_highs_notna) > 0:
-                max_high = swing_highs_notna.max()
-                if highs[i] > max_high + threshold:
-                    bearish_sweeps[i] = 1
-
-        return bullish_sweeps, bearish_sweeps
     
     def analyze_structure(self, df: pd.DataFrame) -> pd.DataFrame:
         """Complete structure analysis combining all methods"""
@@ -200,8 +144,6 @@ class StructureAnalyzer:
         swing_highs, swing_lows = self.detect_swing_points(highs, lows)
         bullish_bos, bearish_bos = self.detect_bos(closes, swing_highs, swing_lows)
         bullish_mss, bearish_mss = self.detect_mss(swing_highs, swing_lows)
-        bodies, wicks, displacements, displacement_directions = self.detect_displacement(opens, closes, highs, lows)
-        bullish_sweeps, bearish_sweeps = self.detect_liquidity_sweep(highs, lows, swing_highs, swing_lows)
 
         df["swing_high"] = swing_highs
         df["swing_low"] = swing_lows
@@ -209,18 +151,8 @@ class StructureAnalyzer:
         df["bearish_bos"] = bearish_bos
         df["bullish_mss"] = bullish_mss
         df["bearish_mss"] = bearish_mss
-        df["body"] = bodies
-        df["wick"] = wicks
-        df["displacement"] = displacements
-        df["displacement_direction"] = displacement_directions
-        df["bullish_sweep"] = bullish_sweeps
-        df["bearish_sweep"] = bearish_sweeps
         
         return df
     
     def check_fvg_touch(self, current_price: float, fvg: Dict) -> bool:
-        """Check if current price is touching a FVG zone"""
-        if fvg['type'] == 'bullish':
-            return fvg['bottom'] <= current_price <= fvg['top']
-        else:  # bearish
-            return fvg['bottom'] <= current_price <= fvg['top']
+        return fvg['bottom'] <= current_price <= fvg['top']

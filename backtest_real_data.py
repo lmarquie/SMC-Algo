@@ -9,6 +9,7 @@ import requests
 import asyncio
 import json
 from polygon import RESTClient
+import shutil
 
 from config import *
 from structure_analysis import StructureAnalyzer
@@ -16,9 +17,7 @@ from trading_strategy import FVGStrategy
 from hyperliquid.info import Info
 from hyperliquid.utils import constants
 from hyperliquid_client import HyperliquidClient
-
-plot_times = np.array([])
-plot_opens = np.array([])
+import matplotlib.pyplot as plt
 
 
 class RealDataBacktester:
@@ -51,6 +50,16 @@ class RealDataBacktester:
 
         # Add leverage mapping to config
         self.config['MAX_LEVERAGE'] = MAX_LEVERAGE
+
+        self.plot_times = np.array([])
+        self.plot_opens = np.array([])
+        self.open_times = np.array([])
+        self.open_values = np.array([])
+        self.close_times = np.array([])
+        self.close_values = np.array([])
+
+        self.long_count = 0
+        self.short_count = 0
 
 
     async def fetch_polygon_data(self, symbol: str):
@@ -103,8 +112,8 @@ class RealDataBacktester:
 
 
     def fetch_data(self, symbol):
-        df = self.fetch_polygon_data(symbol)
-        #df = self.fetch_hyperliquid_data(symbol)
+        #df = self.fetch_polygon_data(symbol)
+        df = self.fetch_hyperliquid_data(symbol)
         return df
 
 
@@ -140,6 +149,9 @@ class RealDataBacktester:
             current_low = current_candle['low']
             current_high = current_candle['high']
 
+            self.plot_times = np.append(self.plot_times, current_candle["T"])
+            self.plot_opens = np.append(self.plot_opens, current_candle['open'])
+
             # Get data up to current point
             current_data = data.iloc[max(0, i - 99):i + 1]
 
@@ -159,8 +171,12 @@ class RealDataBacktester:
                 # Check if stop loss is hit
                 if direction == 'long' and current_low <= stop_loss:
                     self._close_position(stop_loss, current_candle.name, "Stop Loss")
+                    self.close_times = np.append(self.close_times, i-50)
+                    self.close_values = np.append(self.close_values, current_candle['open'])
                 elif direction == 'short' and current_high >= stop_loss:
                     self._close_position(stop_loss, current_candle.name, "Stop Loss")
+                    self.close_times = np.append(self.close_times, i - 50)
+                    self.close_values = np.append(self.close_values, current_candle['open'])
 
             # Check for new entry if no position
             if not self.current_position:
@@ -168,7 +184,10 @@ class RealDataBacktester:
                 setup = self.strategy.check_entry_conditions(current_data, current_htf_data, verbose)
                 if setup:
                     setup['symbol'] = symbol  # Add symbol to setup
+
                     self._open_position(setup, current_price, current_candle.name)
+                    self.open_times = np.append(self.open_times, i-50)
+                    self.open_values = np.append(self.open_values, current_candle['open'])
 
         # Close any remaining position
         if self.current_position:
@@ -182,6 +201,7 @@ class RealDataBacktester:
     def _open_position(self, setup: Dict, current_price: float, timestamp):
         """Open a new position"""
         try:
+
             # Calculate position size
             risk_amount = abs(setup['entry_price'] - setup['stop_loss'])
             min_stop_distance = setup['entry_price'] * 0.0015
@@ -209,6 +229,11 @@ class RealDataBacktester:
                 'reason': setup['reason'],
                 'symbol': setup['symbol']
             }
+
+            if setup["direction"] == "long":
+                self.long_count += 1
+            else: # short
+                self.short_count += 1
 
             self.logger.info(f"Position opened: {self.current_position}")
             self.logger.info(
@@ -445,6 +470,51 @@ async def run_real_data_backtest(symbol):
         print(f"Average Loss: ${avg_loss:.2f}")
         print(f"Profit Factor: {profit_factor:.2f}")
         print(f"Average R:R: {avg_rr:.2f}")  # Add average R:R
+
+        print(f"Long Trades Taken: {backtester.long_count} / {len(all_trades)}")
+        print(f"Short Trades Taken: {backtester.short_count} / {len(all_trades)}")
+
+        plt.plot(backtester.plot_times, backtester.plot_opens, color="blue", linewidth=1)
+
+        for trade in winning_trades:
+            entry_idx = trade["entry_time"].timestamp() * 1000
+            exit_idx = trade["exit_time"].timestamp() * 1000
+
+            plt.plot([entry_idx, exit_idx],  # x-coordinates of the two points
+                     [trade["entry_price"], trade["exit_price"]],  # y-coordinates of the two points
+                     color='green', linestyle='--', linewidth=5)
+
+        for trade in losing_trades:
+            entry_idx = trade["entry_time"].timestamp() * 1000
+            exit_idx = trade["exit_time"].timestamp() * 1000
+
+            plt.plot([entry_idx, exit_idx],  # x-coordinates of the two points
+                     [trade["entry_price"], trade["exit_price"]],  # y-coordinates of the two points
+                     color='red', linestyle='--', linewidth=5)
+
+        plt.savefig("backtest.png")
+        plt.close()
+
+        if os.path.exists('trades'):
+            shutil.rmtree("trades")
+        os.makedirs("trades", exist_ok=True)
+        df = await backtester.fetch_data(symbol)
+        for i, trade in enumerate(all_trades):
+            entry_idx = int((trade['entry_time'].timestamp() * 1000 - backtester.plot_times[0]) / 60_000)
+            exit_idx = int((trade['exit_time'].timestamp() * 1000 - backtester.plot_times[0]) / 60_000)
+
+            plt.style.use('_mpl-gallery')
+            plt.margins(x=0.1)
+            plt.tight_layout()
+            fig, ax = plt.subplots()
+            for idx in range(entry_idx, exit_idx):
+                candle = df.iloc[idx]
+                boxplot_data = [[candle["low"], candle["open"], candle["close"], candle["high"]]]
+                ax.boxplot(boxplot_data, positions=[(idx-entry_idx+1) * 2], widths=1.5, showfliers=False, manage_ticks=True, whis=float('inf'))
+
+            plt.savefig(f"trades/trade_{entry_idx}.png", dpi=600, bbox_inches="tight")
+            plt.close("all")
+
     else:
         print("No trades executed")
         print("Final Balance: $10,000.00")
@@ -453,8 +523,10 @@ async def run_real_data_backtest(symbol):
 
     print("=" * 70)
     print(f"FVGs: {backtester.strategy.fvg_count}")
+    print(f"Bullish FVG Touches: {backtester.strategy.bullish_fvg_touch}")
+    print(f"Bearish FVG Touches: {backtester.strategy.bearish_fvg_touch}")
 
 
-SYMBOL = "AVAX"
+SYMBOL = "SOL"
 if __name__ == "__main__":
     asyncio.run(run_real_data_backtest(SYMBOL))
