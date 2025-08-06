@@ -15,9 +15,15 @@ class StructureAnalyzer:
         swing_lows = np.full(shape=len(highs), fill_value=np.nan)
 
         for i in range(1, len(highs) - 2):
-            if highs[i] > highs[i-1] and highs[i] > highs[i + 1]:
+            if (highs[i] > highs[i-1]
+                and highs[i] > highs[i - 2]
+                and highs[i] > highs[i + 1]
+                and highs[i] > highs[i + 2]):
                 swing_highs[i] = highs[i]
-            if lows[i] < lows[i-1] and lows[i] < lows[i + 1]:
+            if (lows[i] < lows[i-1]
+                and lows[i] < lows[i - 2]
+                and lows[i] < lows[i + 1]
+                and lows[i] < lows[i + 2]):
                 swing_lows[i] = lows[i]
 
 
@@ -94,6 +100,7 @@ class StructureAnalyzer:
 
         highs = df['high'].to_numpy()
         lows = df['low'].to_numpy()
+        indices = df.index.to_numpy()
 
         for i in range(2, len(highs)):
             # Bullish FVG: gap between candle 1's high and candle 3's low
@@ -104,8 +111,7 @@ class StructureAnalyzer:
             if c3_low > c1_high:
                 fvg = {
                     'type': 'bullish',
-                    'start_idx': i - 1,
-                    'end_idx': i,
+                    'start_idx': indices[i - 1],
                     'top': c2_low,
                     'bottom': c1_high,
                     'strength': c2_low - c1_high,
@@ -121,8 +127,7 @@ class StructureAnalyzer:
             if c3_high < c1_low:
                 fvg = {
                     'type': 'bearish',
-                    'start_idx': i - 1,
-                    'end_idx': i,
+                    'start_idx': indices[i - 1],
                     'top': c1_low,
                     'bottom': c2_high,
                     'strength': c1_low - c2_high,

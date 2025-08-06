@@ -17,6 +17,7 @@ class FVGStrategy:
         self.fvg_count = 0
         self.bullish_fvg_touch = 0
         self.bearish_fvg_touch = 0
+        self.fvg_lookback = 15
         
         # Setup logging
         logging.basicConfig(level=logging.INFO)
@@ -25,28 +26,29 @@ class FVGStrategy:
     def update_fvgs(self, df: pd.DataFrame) -> List[Dict]:
         """Update and maintain active FVGs"""
 
-        recent_fvgs = self.analyzer.detect_fvg(df)
-        recent_fvgs = [fvg for fvg in recent_fvgs if fvg['end_idx'] >= len(df) - 20]
-        existing_start_idxs = [fvg['start_idx'] for fvg in self.active_fvgs]
-        new_fvgs = [fvg for fvg in recent_fvgs if (not fvg['start_idx'] in existing_start_idxs)]
+        current_idx = df.index[-1]
+        recent_fvgs = self.analyzer.detect_fvg(df.tail(self.fvg_lookback + 1)) # plus 1 to show candle before first possible fvg
+        existing_start_indices = [fvg['start_idx'] for fvg in self.active_fvgs]
+        new_fvgs = [fvg for fvg in recent_fvgs if not fvg['start_idx'] in existing_start_indices]
         self.fvg_count += len(new_fvgs)
         current_price = df['close'].iloc[-1]
         
         # Filter out old FVGs and mark filled ones
         active_fvgs = []
         for fvg in self.active_fvgs + recent_fvgs:
-            if not fvg['filled']:
-                if fvg['type'] == 'bullish':
-                    # FVG is filled if price goes below the bottom
-                    if current_price < fvg['bottom']:
-                        fvg['filled'] = True
-                else:  # bearish
-                    # FVG is filled if price goes above the top
-                    if current_price > fvg['top']:
-                        fvg['filled'] = True
-                
-            if not fvg['filled']:
-                 active_fvgs.append(fvg)
+            if current_idx - fvg['start_idx'] <= self.fvg_lookback and current_idx - fvg['start_idx'] > 2:
+                if not fvg['filled']:
+                    if fvg['type'] == 'bullish':
+                        # FVG is filled if price goes below the bottom
+                        if current_price < fvg['bottom']:
+                            fvg['filled'] = True
+                    else:  # bearish
+                        # FVG is filled if price goes above the top
+                        if current_price > fvg['top']:
+                            fvg['filled'] = True
+
+                if not fvg['filled']:
+                     active_fvgs.append(fvg)
         
         self.active_fvgs = active_fvgs
         return active_fvgs
@@ -111,7 +113,7 @@ class FVGStrategy:
         larger_trend = self.identify_larger_trend(htf_df, verbose)
         
         # Make trend confidence requirement stricter
-        if larger_trend['confidence'] < 0.60:  # Set to 60% confidence
+        if larger_trend['confidence'] < 0.50:  # Set to 60% confidence
             return None
 
         # Step 3: Look for reversal of the pullback
@@ -142,8 +144,9 @@ class FVGStrategy:
             if self.analyzer.check_fvg_touch(current_price, fvg):
                 self.bullish_fvg_touch += 1
                 # Analyze the DataFrame to get structure columns
+                fvg_distance = df.index[-1] - fvg['start_idx']
                 df_analyzed = self.analyzer.analyze_structure(df)
-                recent_df = df_analyzed.tail(40)  # Increased from 5 to 10 candles - more opportunities
+                recent_df = df_analyzed.tail(fvg_distance)  # Increased from 5 to 10 candles - more opportunities
                 
                 # Look for bullish BOS or MSS (reversal signal) - make stricter
                 has_bullish_reversal = (
@@ -187,7 +190,8 @@ class FVGStrategy:
                 self.bearish_fvg_touch += 1
                 # Analyze the DataFrame to get structure columns
                 df_analyzed = self.analyzer.analyze_structure(df)
-                recent_df = df_analyzed.tail(40)  # Increased from 5 to 10 candles - more opportunities
+                fvg_distance = df.index[-1] - fvg['start_idx']
+                recent_df = df_analyzed.tail(fvg_distance)  # Increased from 5 to 10 candles - more opportunities
                 
                 # Look for bearish BOS or MSS (reversal signal) - make stricter
                 has_bearish_reversal = (

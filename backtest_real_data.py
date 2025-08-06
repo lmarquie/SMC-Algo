@@ -64,7 +64,7 @@ class RealDataBacktester:
 
     async def fetch_polygon_data(self, symbol: str):
 
-        with open(f'market_data/recent_{symbol.lower()}.json', 'r') as f:
+        with open(f'recent_{symbol.lower()}.json', 'r') as f:
             aggs_list = json.load(f)
 
         df = pd.DataFrame()
@@ -78,7 +78,8 @@ class RealDataBacktester:
 
         # Convert timestamp to datetime and set as index
         df['T'] = pd.to_datetime(df['T'], unit='ms')
-        df.set_index('T', inplace=True, drop=False)
+        #df = df.tail(50_000)
+        df = df.reset_index(drop=True)
 
         self.logger.info(f"✅ Successfully loaded {len(df)} candles from JSON file for {symbol}")
         return df
@@ -101,17 +102,17 @@ class RealDataBacktester:
         if len(df) > target_candles:
             df = df.tail(target_candles)
 
-        df['T'] = pd.to_datetime(df['T'], unit='ms')
         df = df[["open", "high", "low", "close", "T"]]
-        df.set_index('T', inplace=True, drop=False)
+        df['T'] = pd.to_datetime(df['T'], unit='ms')
+        df = df.reset_index(drop=True)
 
         self.logger.info(f"✅ Successfully fetched {len(df)} real candles for {symbol}")
         return df
 
 
     def fetch_data(self, symbol):
-        #df = self.fetch_polygon_data(symbol)
-        df = self.fetch_hyperliquid_data(symbol)
+        df = self.fetch_polygon_data(symbol)
+        #df = self.fetch_hyperliquid_data(symbol)
         return df
 
 
@@ -128,7 +129,8 @@ class RealDataBacktester:
         data = await self.fetch_data(symbol)
 
         # Create HTF data by resampling
-        htf_data = data.resample('15T').agg({ ### CHANGE TO 5 MINUTES
+        date_indexed_df = data.set_index('T', inplace=False, drop=False)
+        htf_data = date_indexed_df.resample('15T').agg({ ### CHANGE TO 5 MINUTES
             'open': 'first',
             'high': 'max',
             'low': 'min',
@@ -142,22 +144,26 @@ class RealDataBacktester:
 
             if i % 50 == 0:
                 print(f"Current Iteration: {i}/{len(data) - 1}, Balance: ${self.current_balance:.2f}")
+
+            if len(self.close_times) > 0:
+                if i - self.close_times[-1] < 20:
+                    continue
+
             current_candle = data.iloc[i]
             current_price = current_candle['close']
             current_low = current_candle['low']
             current_high = current_candle['high']
 
-
-            self.plot_times = np.append(self.plot_times, current_candle['T'].timestamp())
+            self.plot_times = np.append(self.plot_times, i)
             self.plot_opens = np.append(self.plot_opens, current_candle['open'])
 
             # Get data up to current point
             current_data = data.iloc[max(0, i - 99):i + 1]
 
             # Get corresponding HTF data
-            current_time = current_candle.name
+            current_time = current_candle['T']
             htf_end_idx = htf_data.index.get_indexer([current_time], method='ffill')[0]
-            current_htf_data = htf_data.iloc[max(0, htf_end_idx - 24):htf_end_idx + 1]
+            current_htf_data = htf_data.iloc[max(0, htf_end_idx - 49):htf_end_idx + 1]
 
             # --- HARD STOP LOSS ENFORCEMENT ---
             if self.current_position:
@@ -169,12 +175,12 @@ class RealDataBacktester:
 
                 # Check if stop loss is hit
                 if direction == 'long' and current_low <= stop_loss:
-                    self._close_position(stop_loss, current_candle['T'], "Stop Loss")
-                    self.close_times = np.append(self.close_times, i-50)
+                    self._close_position(stop_loss, i, "Stop Loss")
+                    self.close_times = np.append(self.close_times, i)
                     self.close_values = np.append(self.close_values, current_candle['open'])
                 elif direction == 'short' and current_high >= stop_loss:
-                    self._close_position(stop_loss, current_candle['T'], "Stop Loss")
-                    self.close_times = np.append(self.close_times, i - 50)
+                    self._close_position(stop_loss, i, "Stop Loss")
+                    self.close_times = np.append(self.close_times, i)
                     self.close_values = np.append(self.close_values, current_candle['open'])
 
             # Check for new entry if no position
@@ -184,8 +190,8 @@ class RealDataBacktester:
                 if setup:
                     setup['symbol'] = symbol  # Add symbol to setup
 
-                    self._open_position(setup, current_price, current_candle['T'])
-                    self.open_times = np.append(self.open_times, i-50)
+                    self._open_position(setup, current_price, i)
+                    self.open_times = np.append(self.open_times, i)
                     self.open_values = np.append(self.open_values, current_candle['open'])
 
         # Close any remaining position
@@ -224,6 +230,7 @@ class RealDataBacktester:
                 'stop_loss': final_stop,
                 'take_profit': setup.get('take_profit'),
                 'size': position_size,
+                'fvg': setup['fvg'],
                 'entry_time': timestamp,
                 'reason': setup['reason'],
                 'symbol': setup['symbol']
@@ -291,6 +298,7 @@ class RealDataBacktester:
                 'exit_price': current_price,
                 'size': self.current_position['size'],
                 'pnl_pct': pnl_pct,
+                'fvg': self.current_position['fvg'],
                 'pnl_dollar': pnl_dollar,
                 'reason': reason,
                 'exit_reason': reason,
@@ -403,7 +411,6 @@ async def run_real_data_backtest(symbol):
     backtester.trades = []
 
     trades = await backtester.run_backtest(symbol=symbol)
-    print(len(trades))
 
     # Add symbol info to trades
     for trade in trades:
@@ -457,7 +464,7 @@ async def run_real_data_backtest(symbol):
         total_losses = abs(sum([t['pnl_dollar'] for t in losing_trades]))
         profit_factor = total_wins / total_losses if total_losses > 0 else 0
 
-        avg_rr = avg_win / 100
+        avg_rr = avg_win / 150
 
         print(f"Final Balance: ${final_balance:,.2f}")
         print(f"Total P&L: ${total_pnl:.2f}")
@@ -473,19 +480,19 @@ async def run_real_data_backtest(symbol):
         print(f"Long Trades Taken: {backtester.long_count} / {len(all_trades)}")
         print(f"Short Trades Taken: {backtester.short_count} / {len(all_trades)}")
 
-        plt.plot(backtester.plot_times, backtester.plot_opens, color="blue", linewidth=1)
+        plt.plot(backtester.plot_times, backtester.plot_opens, color="blue", alpha=0.5, linewidth=1)
 
         for trade in winning_trades:
-            entry_idx = trade["entry_time"].timestamp()
-            exit_idx = trade["exit_time"].timestamp()
+            entry_idx = trade["entry_time"]
+            exit_idx = trade["exit_time"]
 
             plt.plot([entry_idx, exit_idx],  # x-coordinates of the two points
                      [trade["entry_price"], trade["exit_price"]],  # y-coordinates of the two points
                      color='green', linestyle='--', linewidth=5)
 
         for trade in losing_trades:
-            entry_idx = trade["entry_time"].timestamp()
-            exit_idx = trade["exit_time"].timestamp()
+            entry_idx = trade["entry_time"]
+            exit_idx = trade["exit_time"]
 
             plt.plot([entry_idx, exit_idx],  # x-coordinates of the two points
                      [trade["entry_price"], trade["exit_price"]],  # y-coordinates of the two points
@@ -499,23 +506,25 @@ async def run_real_data_backtest(symbol):
         os.makedirs("trades", exist_ok=True)
         df = await backtester.fetch_data(symbol)
         for i, trade in enumerate(all_trades):
-            entry_idx = df.index.get_loc(trade['entry_time'])
-            exit_idx = df.index.get_loc(trade['exit_time'])
+            entry_idx = trade['entry_time']
+            exit_idx = trade['exit_time']
 
             plt.figure(figsize=(15, 8))
             plt.margins(x=0.1)
             plt.tight_layout()
             fig, ax = plt.subplots()
-            for idx in range(entry_idx-20, exit_idx+1):
+            print(f"Trade {i + 1}, entry {entry_idx}, fvg index {trade['fvg']['start_idx']}")
+            for idx in range(entry_idx-25, exit_idx+9):
                 candle = df.iloc[idx]
                 boxplot_data = [[candle["low"], candle["open"], candle["close"], candle["high"]]]
-                boxprops = {}
 
                 if idx == entry_idx:
                     boxprops = {'facecolor': 'green', 'alpha': 1}
                 elif idx == exit_idx:
                     boxprops = {'facecolor': 'red', 'alpha': 1}
-                elif idx > entry_idx:
+                elif idx == df.index.get_loc(trade['fvg']['start_idx']):
+                    boxprops = {'facecolor': 'orange', 'alpha': 1}
+                elif idx > entry_idx and idx < exit_idx:
                     if candle["close"] >= candle["open"]:
                         boxprops = {'facecolor': 'green', 'alpha': 0.4}
                     else:
