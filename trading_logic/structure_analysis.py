@@ -2,10 +2,11 @@ import pandas as pd
 import numpy as np
 from typing import List, Tuple, Dict, Optional
 
+
 class StructureAnalyzer:
-    def __init__(self, lookback: int = 10):
-        self.lookback = lookback
-        
+    def __init__(self):
+        pass
+
     def detect_swing_points(self, highs: np.array, lows: np.array):
         """Detect swing highs and lows in the price data
 
@@ -15,21 +16,19 @@ class StructureAnalyzer:
         swing_lows = np.full(shape=len(highs), fill_value=np.nan)
 
         for i in range(1, len(highs) - 2):
-            if (highs[i] > highs[i-1]
-                and highs[i] > highs[i - 2]
-                and highs[i] > highs[i + 1]
-                and highs[i] > highs[i + 2]):
+            if (highs[i] > highs[i - 1]
+                    and highs[i] > highs[i - 2]
+                    and highs[i] > highs[i + 1]
+                    and highs[i] > highs[i + 2]):
                 swing_highs[i] = highs[i]
-            if (lows[i] < lows[i-1]
-                and lows[i] < lows[i - 2]
-                and lows[i] < lows[i + 1]
-                and lows[i] < lows[i + 2]):
+            if (lows[i] < lows[i - 1]
+                    and lows[i] < lows[i - 2]
+                    and lows[i] < lows[i + 1]
+                    and lows[i] < lows[i + 2]):
                 swing_lows[i] = lows[i]
 
-
-
         return swing_highs, swing_lows
-    
+
     def detect_bos(self, closes: np.array, swing_highs: np.array, swing_lows: np.array):
         """
         Detect Break of Structure (BOS) - price breaking above/below swing points
@@ -61,7 +60,7 @@ class StructureAnalyzer:
                 last_swing_low = None  # Reset after B1OS
 
         return bullish_bos, bearish_bos
-    
+
     def detect_mss(self, swing_highs: np.array, swing_lows: np.array):
         """
         Detect Market Structure Shift (MSS) - change from higher highs to lower highs or vice versa
@@ -93,7 +92,7 @@ class StructureAnalyzer:
                     bearish_mss[idx] = 1
 
         return bullish_mss, bearish_mss
-    
+
     def detect_fvg(self, df: pd.DataFrame) -> List[Dict]:
         """Detect Fair Value Gaps (FVG) - imbalance between candles"""
         fvgs = []
@@ -136,7 +135,7 @@ class StructureAnalyzer:
                 fvgs.append(fvg)
 
         return fvgs
-    
+
     def analyze_structure(self, df: pd.DataFrame) -> pd.DataFrame:
         """Complete structure analysis combining all methods"""
         df = df.copy()
@@ -144,7 +143,7 @@ class StructureAnalyzer:
         lows = df["low"].to_numpy()
         opens = df["open"].to_numpy()
         closes = df["close"].to_numpy()
-        
+
         # Apply all analysis methods
         swing_highs, swing_lows = self.detect_swing_points(highs, lows)
         bullish_bos, bearish_bos = self.detect_bos(closes, swing_highs, swing_lows)
@@ -156,8 +155,8 @@ class StructureAnalyzer:
         df["bearish_bos"] = bearish_bos
         df["bullish_mss"] = bullish_mss
         df["bearish_mss"] = bearish_mss
-        
+
         return df
-    
+
     def check_fvg_touch(self, current_price: float, fvg: Dict) -> bool:
         return fvg['bottom'] <= current_price <= fvg['top']
