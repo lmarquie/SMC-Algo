@@ -194,9 +194,6 @@ class LiveTrader(BaseTrader):
                 if end_time and datetime.now() >= end_time:
                     break
 
-                pong_waiter = ws.ping()
-                await pong_waiter  # resolves when Pong is received
-
                 # Check the cooldown period
                 cooldown_remaining = None
                 if self.last_position_close_time:
@@ -206,11 +203,31 @@ class LiveTrader(BaseTrader):
                 if cooldown_remaining and cooldown_remaining > 0:
                     print(f"⏳ COOLDOWN ACTIVE for {self.symbol}: {cooldown_remaining:.0f} seconds remaining")
                     candle_idx += 1
+                    if candle_idx % 15 == 0:
+                        pong_waiter = ws.ping()
+                        await pong_waiter  # resolves when Pong is received
                     await asyncio.sleep(1)
                     continue
 
-                candle = await ws.recv()
-                candle = json.loads(candle)['data']
+                try:
+                    candle = await ws.recv()
+                    candle = json.loads(candle)['data']
+                except Exception as _:
+                    print("Error receiving candle, trying to reconnect again...")
+                    subscribe_msg = {
+                        "method": "subscribe",
+                        "subscription": {
+                            "type": "candle",
+                            "coin": "SOL",
+                            "interval": "1m"
+                        }
+                    }
+                    await ws.send(json.dumps(subscribe_msg))
+                    await ws.recv()
+
+                    candle = await ws.recv()
+                    candle = json.loads(candle)['data']
+
 
                 if not self.last_candle:
                     self.last_candle = {
