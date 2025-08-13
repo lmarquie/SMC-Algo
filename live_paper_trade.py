@@ -171,7 +171,7 @@ class LiveTrader(BaseTrader):
         ltf_data, htf_data, current_price = await self.fetch_initial_data()
 
         url = "wss://api.hyperliquid.xyz/ws"
-        async with (websockets.connect(url, ssl=self.ssl_context) as ws):
+        async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
             # Subscribe to SOL 1m candle feed (example format)
             subscribe_msg = {
                 "method": "subscribe",
@@ -204,29 +204,19 @@ class LiveTrader(BaseTrader):
                     print(f"⏳ COOLDOWN ACTIVE for {self.symbol}: {cooldown_remaining:.0f} seconds remaining")
                     candle_idx += 1
                     if candle_idx % 15 == 0:
-                        pong_waiter = ws.ping()
-                        await pong_waiter  # resolves when Pong is received
+                        try:
+                            pong_waiter = ws.ping()
+                            await pong_waiter  # resolves when Pong is received
+                        except websockets.exceptions.ConnectionClosedError as e:
+                            await asyncio.sleep(5)
                     await asyncio.sleep(1)
                     continue
 
                 try:
                     candle = await ws.recv()
                     candle = json.loads(candle)['data']
-                except Exception as _:
-                    print("Error receiving candle, trying to reconnect again...")
-                    subscribe_msg = {
-                        "method": "subscribe",
-                        "subscription": {
-                            "type": "candle",
-                            "coin": "SOL",
-                            "interval": "1m"
-                        }
-                    }
-                    await ws.send(json.dumps(subscribe_msg))
-                    await ws.recv()
-
-                    candle = await ws.recv()
-                    candle = json.loads(candle)['data']
+                except websockets.exceptions.ConnectionClosedError as e:
+                    await asyncio.sleep(5)
 
 
                 if not self.last_candle:
