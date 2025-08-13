@@ -109,6 +109,7 @@ class LiveTrader(BaseTrader):
             else:
                 pnl_dollar = pnl_dollar if current_price < self.current_position['entry_price'] else -pnl_dollar
 
+            pnl_dollar -= 40
             # Debug P&L calculation
             print(f"P&L Debug: Entry: ${self.current_position['entry_price']:.4f}, Exit: ${current_price:.4f}")
             print(f"P&L Debug: Price diff: ${price_diff:.4f}, Position size: {self.current_position['size']:.4f}")
