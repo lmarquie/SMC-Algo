@@ -201,48 +201,41 @@ class LiveTrader(BaseTrader):
                     time_since_close = datetime.now() - self.last_position_close_time
                     cooldown_remaining = 300 - time_since_close.total_seconds()  # 5 minutes = 300 seconds
 
-                if cooldown_remaining and cooldown_remaining > 0:
-                    print(f"⏳ COOLDOWN ACTIVE for {self.symbol}: {cooldown_remaining:.0f} seconds remaining")
-                    candle_idx += 1
-                    if candle_idx % 15 == 0:
-                        try:
-                            pong_waiter = ws.ping()
-                            await pong_waiter  # resolves when Pong is received
-                        except websockets.exceptions.ConnectionClosedError as e:
-                            await asyncio.sleep(5)
-                    await asyncio.sleep(1)
-                    continue
-
                 try:
                     candle = await ws.recv()
                     candle = json.loads(candle)['data']
+
+                    if not self.last_candle:
+                        self.last_candle = {
+                            'T': datetime.fromtimestamp(candle['T'] / 1000),
+                            'open': float(candle['o']),
+                            'high': float(candle['h']),
+                            'low': float(candle['l']),
+                        }
+                    elif datetime.now() < self.last_candle['T']:
+                        self.last_candle['close'] = float(candle['c'])
+                    else:
+                        print("Adding ltf candle")
+                        ltf_data = pd.concat([ltf_data, pd.DataFrame([self.last_candle])], ignore_index=True)
+                        ltf_data = ltf_data.iloc[-self.ltf_lookback:].reset_index(drop=True)
+                        self.last_candle_timestamp = self.last_candle['T']
+
+                        if self.last_candle['T'] >= htf_data['T'].iloc[-1] + timedelta(minutes=HTF_TIMEFRAME_INT):
+                            print("Adding htf candle")
+                            htf_data = pd.concat([htf_data, pd.DataFrame([self.last_candle])], ignore_index=True)
+                            htf_data = htf_data.iloc[-self.htf_lookback:].reset_index(drop=True)
+
+                        if cooldown_remaining and cooldown_remaining > 0:
+                            print(f"⏳ COOLDOWN ACTIVE for {self.symbol}: {cooldown_remaining:.0f} seconds remaining")
+                            candle_idx += 1
+                            await asyncio.sleep(1)
+                            continue
+
+                        self.single_iteration(ltf_data=ltf_data, htf_data=htf_data, current_time=ltf_data['T'].iloc[-1])
+                        self.last_candle = None
+
                 except websockets.exceptions.ConnectionClosedError as e:
                     await asyncio.sleep(5)
-
-
-                if not self.last_candle:
-                    self.last_candle = {
-                        'T': datetime.fromtimestamp(candle['T'] / 1000),
-                        'open': float(candle['o']),
-                        'high': float(candle['h']),
-                        'low': float(candle['l']),
-                    }
-                elif datetime.now() < self.last_candle['T']:
-                    self.last_candle['close'] = float(candle['c'])
-                else:
-                    print("Adding ltf candle")
-                    ltf_data = pd.concat([ltf_data, pd.DataFrame([self.last_candle])], ignore_index=True)
-                    ltf_data = ltf_data.iloc[-self.ltf_lookback:].reset_index(drop=True)
-                    self.last_candle_timestamp = self.last_candle['T']
-
-                    if self.last_candle['T'] >= htf_data['T'].iloc[-1] + timedelta(minutes=HTF_TIMEFRAME_INT):
-                        print("Adding htf candle")
-                        htf_data = pd.concat([htf_data, pd.DataFrame([self.last_candle])], ignore_index=True)
-                        htf_data = htf_data.iloc[-self.htf_lookback:].reset_index(drop=True)
-
-                    self.single_iteration(ltf_data=ltf_data, htf_data=htf_data, current_time=ltf_data['T'].iloc[-1])
-                    self.last_candle = None
-
 
         if self.current_position:
             final_price = ltf_data['close'].iloc[-1]
