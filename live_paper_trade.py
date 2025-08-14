@@ -183,23 +183,27 @@ class LiveTrader(BaseTrader):
         }
         url = "wss://api.hyperliquid.xyz/ws"
 
-        async with websockets.connect(url, ssl=self.ssl_context, ping_interval=20, ping_timeout=20) as ws:
-            # Subscribe to SOL 1m candle feed (example format)
-            candle_idx = 0
-            await ws.send(json.dumps(subscribe_msg))
-            await ws.recv()
+        while True:
+            if end_time and datetime.now() >= end_time:
+                break
 
-            while True:
-                if end_time and datetime.now() >= end_time:
-                    break
+            # Check the cooldown period
+            cooldown_remaining = None
+            if self.last_position_close_time:
+                time_since_close = datetime.now() - self.last_position_close_time
+                cooldown_remaining = 300 - time_since_close.total_seconds()  # 5 minutes = 300 seconds
 
-                # Check the cooldown period
-                cooldown_remaining = None
-                if self.last_position_close_time:
-                    time_since_close = datetime.now() - self.last_position_close_time
-                    cooldown_remaining = 300 - time_since_close.total_seconds()  # 5 minutes = 300 seconds
+            try:
+                async with websockets.connect(
+                    url,
+                    ssl=self.ssl_context,
+                    ping_interval=20,
+                    ping_timeout=20,
+                    close_timeout=5
+                ) as ws:
+                    await ws.send(json.dumps(subscribe_msg))
+                    await ws.recv()
 
-                try:
                     candle = await ws.recv()
                     candle = json.loads(candle)['data']
 
@@ -225,20 +229,18 @@ class LiveTrader(BaseTrader):
 
                         if cooldown_remaining and cooldown_remaining > 0:
                             print(f"⏳ COOLDOWN ACTIVE for {self.symbol}: {cooldown_remaining:.0f} seconds remaining")
-                            candle_idx += 1
                             await asyncio.sleep(1)
                             continue
 
                         self.single_iteration(ltf_data=ltf_data, htf_data=htf_data, current_time=ltf_data['T'].iloc[-1])
                         self.last_candle = None
 
-                except websockets.exceptions.ConnectionClosedError as e:
-                    print(f"Connection closed, trying to reconnect in 5 seconds... ({e})")
-                    await asyncio.sleep(5)
-                    await ws.send(json.dumps(subscribe_msg))
-                    await ws.recv()
-                    await asyncio.sleep(1)
-                    continue
+            except websockets.exceptions.ConnectionClosedError as e:
+                print(f"Connection closed, trying to reconnect in 30 seconds... ({e})")
+                await asyncio.sleep(30)
+            except Exception as e:
+                print(f"Unexpected error, attempting to continue in 60 seconds ({e})")
+                await asyncio.sleep(60)
 
         if self.current_position:
             final_price = ltf_data['close'].iloc[-1]
