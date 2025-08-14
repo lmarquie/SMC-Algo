@@ -114,8 +114,10 @@ class LiveTrader(BaseTrader):
             print(f"P&L Debug: Entry: ${self.current_position['entry_price']:.4f}, Exit: ${current_price:.4f}")
             print(f"P&L Debug: Price diff: ${price_diff:.4f}, Position size: {self.current_position['size']:.4f}")
             print(f"P&L Debug: Raw P&L: ${pnl_dollar:.2f}")
+
             # Update balance
             self.current_balance += pnl_dollar
+
             # Record trade
             trade = {
                 'entry_time': self.current_position['entry_time'],
@@ -171,26 +173,22 @@ class LiveTrader(BaseTrader):
 
         ltf_data, htf_data, current_price = await self.fetch_initial_data()
 
-        url = "wss://api.hyperliquid.xyz/ws"
-        async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
-            # Subscribe to SOL 1m candle feed (example format)
-            subscribe_msg = {
-                "method": "subscribe",
-                "subscription": {
-                    "type": "candle",
-                    "coin": "SOL",
-                    "interval": "1m"
-                }
+        subscribe_msg = {
+            "method": "subscribe",
+            "subscription": {
+                "type": "candle",
+                "coin": "SOL",
+                "interval": "1m"
             }
-            await ws.send(json.dumps(subscribe_msg))
-            connection_msg = await ws.recv()
-            if "error" in connection_msg:
-                print("Error subscribing to candles feed")
-                return
+        }
+        url = "wss://api.hyperliquid.xyz/ws"
 
-            print("Successfully subscribed to candles feed")
-
+        async with websockets.connect(url, ssl=self.ssl_context, ping_interval=20, ping_timeout=20) as ws:
+            # Subscribe to SOL 1m candle feed (example format)
             candle_idx = 0
+            await ws.send(json.dumps(subscribe_msg))
+            await ws.recv()
+
             while True:
                 if end_time and datetime.now() >= end_time:
                     break
@@ -235,12 +233,17 @@ class LiveTrader(BaseTrader):
                         self.last_candle = None
 
                 except websockets.exceptions.ConnectionClosedError as e:
+                    print(f"Connection closed, trying to reconnect in 5 seconds... ({e})")
                     await asyncio.sleep(5)
+                    await ws.send(json.dumps(subscribe_msg))
+                    await ws.recv()
+                    await asyncio.sleep(1)
+                    continue
 
         if self.current_position:
             final_price = ltf_data['close'].iloc[-1]
             self._close_live_position(final_price, "Finished trading")
 
 
-trader = LiveTrader("AVAX")
+trader = LiveTrader("SOL")
 asyncio.run(trader.run_paper_trading(duration_minutes=60*24))

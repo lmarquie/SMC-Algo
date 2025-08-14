@@ -10,6 +10,7 @@ class FVGStrategy:
     def __init__(self):
         self.analyzer = StructureAnalyzer()
         self.active_fvgs = []
+        self.trade_setups = []
         self.last_analysis_time = None
         self.current_position = None
         self.fvg_count = 0
@@ -25,6 +26,15 @@ class FVGStrategy:
         # Setup logging
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
+
+    def update_trade_setups(self, df: pd.DataFrame):
+        current_idx = df.index[-1]
+        for setup in self.trade_setups:
+            if setup['time_remaining'] <= 0:
+                self.trade_setups.remove(setup)
+            else:
+                setup['time_remaining'] -= 1
+
 
     def update_fvgs(self, df: pd.DataFrame) -> List[Dict]:
         """Update and maintain active FVGs"""
@@ -108,27 +118,105 @@ class FVGStrategy:
         if larger_trend['confidence'] < 0.50:  # Set to 60% confidence
             return None
 
-
-        print("larger trend identified")
         # Step 3: Look for reversal of the pullback
         current_price = df['close'].iloc[-1]
         active_fvgs = self.update_fvgs(df)
 
-        if larger_trend['trend'] == 'uptrend':  # and pullback['type'] == 'bearish_pullback':
-            print("trying for bullish trade")
-            # Look for bullish reversal to continue uptrend
-            setup = self._create_bullish_trade(df, active_fvgs, current_price, larger_trend)
-            if setup:
-                return setup
+        if larger_trend['trend'] == 'uptrend':
+            self._add_bullish_setups(df, active_fvgs, current_price, larger_trend)
 
-        elif larger_trend['trend'] == 'downtrend':  # and pullback['type'] == 'bullish_pullback':
-            print("trying for bearish trade")
-            # Look for bearish reversal to continue downtrend
-            setup = self._create_bearish_trade(df, active_fvgs, current_price, larger_trend)
-            if setup:
-                return setup
+        elif larger_trend['trend'] == 'downtrend':
+            self._add_bearish_setups(df, active_fvgs, current_price, larger_trend)
 
         return None
+
+    def _add_bullish_setups(self, df, active_fvgs, current_price, larger_trend):
+        bullish_fvgs = [fvg for fvg in active_fvgs if fvg['type'] == 'bullish']
+
+        df_analyzed = self.analyzer.analyze_structure(df)
+        present_bullish_movement = df_analyzed["bullish_bos"].iloc[-1] or df_analyzed["bullish_mss"].iloc[-1]
+        if present_bullish_movement:
+            for fvg in bullish_fvgs:
+                recent_df = df_analyzed.tail(df.index[-1] - fvg['start_idx'])
+                has_bearish_reversal = (
+                        recent_df["bearish_bos"].sum() > 0 or
+                        recent_df["bearish_mss"].sum() > 0
+                )
+
+                if current_price > fvg["top"] and not has_bearish_reversal:
+                    stop_loss = fvg['bottom'] - STOP_LOSS_BUFFER
+
+                    # Find nearest swing low for structure-based stop
+                    nearest_swing_low = self._find_nearest_swing_low(df_analyzed, current_price)
+                    if nearest_swing_low:
+                        swing_stop = nearest_swing_low - STOP_LOSS_BUFFER
+                        # Use the LOWER of the two stops (FVG-based or structure-based)
+                        stop_loss = min(stop_loss, swing_stop)
+
+                    bos_idxs = [idx for idx, val in df_analyzed['bullish_bos'].items() if val == 1]
+                    mss_idxs = [idx for idx, val in df_analyzed['bullish_mss'].items() if val == 1]
+                    self.trade_setups.append({
+                        'direction': 'long',
+                        'stop_loss': stop_loss,
+                        'fvg': fvg,
+                        'bos': bos_idxs,
+                        'mss': mss_idxs,
+                        'time_remaining': df.index[-1] - fvg['start_idx'],
+                        'larger_trend': larger_trend['trend'],
+                        'trend_confidence': larger_trend['confidence'],
+                        'reason': f'Uptrend continuation: Bearish pullback + Bullish reversal + Displacement + FVG. Trend confidence: {larger_trend["confidence"]:.2f}'
+                    })
+
+
+    def _add_bearish_setups(self, df, active_fvgs, current_price, larger_trend):
+        bearish_fvgs = [fvg for fvg in active_fvgs if fvg['type'] == 'bearish']
+        df_analyzed = self.analyzer.analyze_structure(df)
+        present_bearish_movement = df_analyzed["bearish_bos"].iloc[-1] or df_analyzed["bearish_mss"].iloc[-1]
+
+        if present_bearish_movement:
+            for fvg in bearish_fvgs:
+                recent_df = df_analyzed.tail(df.index[-1] - fvg['start_idx'])
+                has_bullish_reversal = (
+                        recent_df["bullish_bos"].sum() > 0 or
+                        recent_df["bullish_mss"].sum() > 0
+                )
+
+                if current_price < fvg["bottom"] and not has_bullish_reversal:
+                    stop_loss = fvg['top'] + STOP_LOSS_BUFFER
+
+                    # Find nearest swing high for structure-based stop
+                    nearest_swing_high = self._find_nearest_swing_high(df_analyzed, current_price)
+                    if nearest_swing_high:
+                        swing_stop = nearest_swing_high + STOP_LOSS_BUFFER
+                        # Use the HIGHER of the two stops (FVG-based or structure-based)
+                        stop_loss = max(stop_loss, swing_stop)
+
+                    bos_idxs = [idx for idx, val in df_analyzed['bearish_bos'].items() if val == 1]
+                    mss_idxs = [idx for idx, val in df_analyzed['bearish_mss'].items() if val == 1]
+                    self.trade_setups.append({
+                        'direction': 'short',
+                        'stop_loss': stop_loss,
+                        'fvg': fvg,
+                        'bos': bos_idxs,
+                        'mss': mss_idxs,
+                        'time_remaining': df.index[-1] - fvg['start_idx'],
+                        'larger_trend': larger_trend['trend'],
+                        'trend_confidence': larger_trend['confidence'],
+                        'reason': f'Downtrend continuation: Bullish pullback + Bearish reversal + Displacement + FVG. Trend confidence: {larger_trend["confidence"]:.2f}'
+                    })
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     def _create_bullish_trade(self, df: pd.DataFrame, fvgs: List[Dict], current_price: float,
                                 larger_trend: Dict) -> Optional[Dict]:
@@ -183,6 +271,7 @@ class FVGStrategy:
                         'fvg': fvg,
                         'bos': bos_idxs,
                         'mss': mss_idxs,
+                        'time_remaining': last_indicator_position - fvg['start_idx'],
                         'larger_trend': larger_trend['trend'],
                         'trend_confidence': larger_trend['confidence'],
                         'reason': f'Uptrend continuation: Bearish pullback + Bullish reversal + Displacement + FVG. Trend confidence: {larger_trend["confidence"]:.2f}'
@@ -243,6 +332,7 @@ class FVGStrategy:
                         'fvg': fvg,
                         'bos': bos_idxs,
                         'mss': mss_idxs,
+                        'time_remaining': last_indicator_position - fvg['start_idx'],
                         'larger_trend': larger_trend['trend'],
                         'trend_confidence': larger_trend['confidence'],
                         'reason': f'Downtrend continuation: Bullish pullback + Bearish reversal + Displacement + FVG. Trend confidence: {larger_trend["confidence"]:.2f}'

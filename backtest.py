@@ -11,7 +11,7 @@ async def run_real_data_backtest(symbol, method):
     """Run the real data backtest for all 3 cryptocurrencies"""
     if method == "binance":
         data = await fetch_binance_data(symbol)
-        data = data.iloc[:43_800 * 6]
+        data = data.iloc[:50_000]
     elif method == "hyperliquid":
         data = await fetch_hyperliquid_data(symbol)
     else:
@@ -168,11 +168,9 @@ async def run_real_data_backtest(symbol, method):
 
     print("=" * 70)
     print(f"FVGs: {backtester.strategy.fvg_count}")
-    print(f"Bullish FVG Touches: {backtester.strategy.bullish_fvg_touch}")
-    print(f"Bearish FVG Touches: {backtester.strategy.bearish_fvg_touch}")
 
 
 SYMBOL = "SOL"
-METHOD = "hyperliquid"
+METHOD = "binance"
 if __name__ == "__main__":
     asyncio.run(run_real_data_backtest(SYMBOL, METHOD))
