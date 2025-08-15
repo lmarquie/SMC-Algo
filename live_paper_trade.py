@@ -317,6 +317,7 @@ class LiveTrader(BaseTrader):
 
                     candle = await ws.recv()
                     candle = json.loads(candle)['data']
+                    T = datetime.fromtimestamp(candle['T'] / 1000)
 
                     if not self.last_candle:
                         self.last_candle = {
@@ -325,7 +326,7 @@ class LiveTrader(BaseTrader):
                             'high': float(candle['h']),
                             'low': float(candle['l']),
                         }
-                    elif datetime.now() < self.last_candle['T']:
+                    elif T == self.last_candle['T']:
                         self.last_candle['close'] = float(candle['c'])
                     else:
                         print("Adding ltf candle")
@@ -363,8 +364,6 @@ class LiveTrader(BaseTrader):
             final_price = ltf_data['close'].iloc[-1]
             self._close_live_position(final_price, "Finished trading")
 
-        self.full_data.set_index('T', inplace=True)
-        self.full_data.sort_index(inplace=True)
         self.create_and_send_images()
 
 
