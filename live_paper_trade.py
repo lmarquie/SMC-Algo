@@ -160,17 +160,22 @@ class LiveTrader(BaseTrader):
         """Run paper trading indefinitely or for specified duration"""
 
         if duration_minutes:
-            print(f"🚀 Starting {self.symbol} paper trading for {duration_minutes} minutes...")
+            message = f"🚀 Starting {self.symbol} paper trading for {duration_minutes} minutes..."
+            print(message)
             start_time = datetime.now()
             end_time = start_time + timedelta(minutes=duration_minutes)
         else:
-            print(f"🚀 Starting {self.symbol} paper trading INDEFINITELY...")
+            message = f"🚀 Starting {self.symbol} paper trading INDEFINITELY..."
+            print(message)
             print("Press Ctrl+C to stop the bot")
             end_time = None
 
         print(f"Trading symbol: {self.symbol}")
+        message += f"Trading symbol: {self.symbol}"
         print(f"Risk per trade: ${RISK_PER_TRADE}")
+        message += f"Risk per trade: {RISK_PER_TRADE}"
 
+        send_telegram_message(message)
         ltf_data, htf_data, current_price = await self.fetch_initial_data()
 
         subscribe_msg = {
@@ -232,7 +237,7 @@ class LiveTrader(BaseTrader):
                             await asyncio.sleep(1)
                             continue
 
-                        self.single_iteration(ltf_data=ltf_data, htf_data=htf_data, current_time=ltf_data['T'].iloc[-1])
+                        self.single_iteration(ltf_data=ltf_data, htf_data=htf_data, current_time=ltf_data['T'].iloc[-1], telegram=True)
                         self.last_candle = None
 
             except websockets.exceptions.ConnectionClosedError as e:

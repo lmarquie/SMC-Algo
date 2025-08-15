@@ -23,7 +23,7 @@ class BaseTrader:
         self.current_position = None
         self.current_balance = balance
 
-    def single_iteration(self, ltf_data, htf_data, current_time):
+    def single_iteration(self, ltf_data, htf_data, current_time, telegram=False):
         current_candle = ltf_data.iloc[-1]
         current_price = current_candle['close']
         current_low = current_candle['low']
@@ -37,7 +37,7 @@ class BaseTrader:
             direction = self.current_position['direction']
 
             # Update trailing stop BEFORE checking stop loss
-            self.strategy.update_trailing_stop(df=ltf_data, position=self.current_position)
+            self.strategy.update_trailing_stop(df=ltf_data, position=self.current_position, telegram=telegram)
 
             # Check if stop loss is hit
             if direction == 'long' and current_low <= stop_loss:
@@ -51,9 +51,6 @@ class BaseTrader:
         else:
             self.strategy.check_entry_conditions(ltf_data, htf_data)
             self.execute_valid_orders(current_price, current_time)
-            #if setup:
-            #    setup['symbol'] = self.symbol  # Add symbol to setup
-            #    self._open_position(setup, current_price, current_time)
 
 
     def execute_valid_orders(self, current_price, current_time):

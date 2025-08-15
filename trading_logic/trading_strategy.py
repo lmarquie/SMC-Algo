@@ -4,6 +4,7 @@ from trading_logic.structure_analysis import StructureAnalyzer
 import logging
 from config import *
 from datetime import datetime
+from helpers.telegram_setup import send_telegram_message
 
 
 class FVGStrategy:
@@ -432,7 +433,7 @@ class FVGStrategy:
         # Return the lowest swing high above current price (closest to price)
         return valid_highs.min()
 
-    def update_trailing_stop(self, df: pd.DataFrame, position: Dict) -> bool:
+    def update_trailing_stop(self, df: pd.DataFrame, position: Dict, telegram=False) -> bool:
         """Update stop only on new swing structure, but only after R:R >= 1:1."""
         if not position:
             return False
@@ -512,11 +513,20 @@ class FVGStrategy:
                         # Only update if both sides confirm (2 before + 2 after)
                         if not before_low_crossed and not after_low_crossed:
                             if position['stop_loss'] != new_stop:
+                                old_stop = position['stop_loss']
                                 position['stop_loss'] = new_stop
                                 position['last_stop_update_idx'] = swing_lows.index[-1]
                                 updated = True
-                                old_stop = position['stop_loss']
                                 print(f"📈 TRAILING STOP TRIGGERED! ${old_stop:.4f} → ${new_stop:.4f} (swing low: ${best_swing_low:.4f}, confirmed after {confirmation_candles} candles)")
+
+                                if telegram:
+                                    telegram_message = "===== TRAILING STOP UPDATED =====\n"
+                                    telegram_message += f"Direction: Long\n"
+                                    telegram_message += f"Stop loss: ${position['original_stop_loss']:.4f} → ${position['stop_loss']:.4f} (swing low: ${best_swing_low:.4f}, confirmed after {confirmation_candles} candles)\n"
+                                    telegram_message += f"Unrealized P&L: ${(current_price - position['entry_price']):.4f} ({(current_price - position['entry_price']) / position['entry_price'] * 100:.2f}%)\n"
+                                    telegram_message += f"Age: {position['age']} candles\n"
+
+                                    send_telegram_message(telegram_message)
 
                         # Debug prints only when candles_after_swing exists
                         print("Swing lows:", swing_lows)
@@ -573,6 +583,15 @@ class FVGStrategy:
                                 updated = True
                                 old_stop = position['stop_loss']
                                 print(f"📉 TRAILING STOP TRIGGERED! ${old_stop:.4f} → ${new_stop:.4f} (swing high: ${best_swing_high:.4f}, confirmed after {confirmation_candles} candles)")
+
+                                if telegram:
+                                    telegram_message = "===== TRAILING STOP UPDATED =====\n"
+                                    telegram_message += f"Direction: Short\n"
+                                    telegram_message += f"Stop loss: ${position['original_stop_loss']:.4f} → ${position['stop_loss']:.4f} (swing high: ${best_swing_high:.4f}, confirmed after {confirmation_candles} candles)\n"
+                                    telegram_message += f"Unrealized P&L: ${(current_price - position['entry_price']):.4f} ({(current_price - position['entry_price']) / position['entry_price'] * 100:.2f}%)\n"
+                                    telegram_message += f"Age: {position['age']} candles\n"
+
+                                    send_telegram_message(telegram_message)
 
                         # Debug prints only when candles_after_swing exists
                         print("Swing highs:", swing_highs)
