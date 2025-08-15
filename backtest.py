@@ -14,7 +14,7 @@ async def run_real_data_backtest(symbol, method):
         data = data.iloc[:200_000]
     elif method == "hyperliquid":
         data = await fetch_hyperliquid_data(symbol)
-        data = data.iloc[3000:]
+
     else:
         raise ValueError("Invalid method")
 

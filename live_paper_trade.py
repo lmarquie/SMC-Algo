@@ -1,6 +1,6 @@
 import pandas as pd
 from helpers.hyperliquid_client import HyperliquidClient
-from helpers.telegram_setup import send_telegram_message
+from helpers.telegram_setup import send_telegram_message, is_stop_requested, send_telegram_image
 from config import *
 from credentials import *
 from datetime import datetime, timedelta
@@ -11,6 +11,7 @@ import ssl
 import certifi
 import websockets
 import json
+import matplotlib.pyplot as plt
 
 class LiveTrader(BaseTrader):
     def __init__(self, symbol):
@@ -28,8 +29,42 @@ class LiveTrader(BaseTrader):
         self.ltf_lookback = 100
         self.htf_lookback = 50
 
-        self.tail_data = None
         self.last_candle = None
+        self.full_data = pd.DataFrame()
+
+        self.plot_times = []
+        self.plot_opens = []
+
+
+    def create_and_send_images(self):
+        plt.plot(self.plot_times, self.plot_opens, color="blue", alpha=0.5, linewidth=1)
+
+        winning_trades = [t for t in self.trades if t['pnl_dollar'] > 0]
+        losing_trades = [t for t in self.trades if t['pnl_dollar'] < 0]
+
+        for trade in winning_trades:
+            entry_idx = trade["entry_time"]
+            exit_idx = trade["exit_time"]
+
+            plt.plot([entry_idx, exit_idx],  # x-coordinates of the two points
+                     [trade["entry_price"], trade["exit_price"]],  # y-coordinates of the two points
+                     color='green', linestyle='--', linewidth=5)
+
+        for trade in losing_trades:
+            entry_idx = trade["entry_time"]
+            exit_idx = trade["exit_time"]
+
+            plt.plot([entry_idx, exit_idx],  # x-coordinates of the two points
+                     [trade["entry_price"], trade["exit_price"]],  # y-coordinates of the two points
+                     color='red', linestyle='--', linewidth=5)
+
+        plt.savefig("summary.png")
+        plt.close()
+
+        send_telegram_image("summary.png", caption="All trades plotted")
+        return
+
+
 
 
     async def fetch_initial_data(self):
@@ -177,6 +212,7 @@ class LiveTrader(BaseTrader):
 
         send_telegram_message(message)
         ltf_data, htf_data, current_price = await self.fetch_initial_data()
+        self.full_data = ltf_data
 
         subscribe_msg = {
             "method": "subscribe",
@@ -190,6 +226,9 @@ class LiveTrader(BaseTrader):
 
         while True:
             if end_time and datetime.now() >= end_time:
+                break
+            elif is_stop_requested():
+                send_telegram_message("🛑 Bot stopped by user")
                 break
 
             # Check the cooldown period
@@ -227,6 +266,11 @@ class LiveTrader(BaseTrader):
                         ltf_data = ltf_data.iloc[-self.ltf_lookback:].reset_index(drop=True)
                         self.last_candle_timestamp = self.last_candle['T']
 
+                        self.full_data = pd.concat([self.full_data, pd.DataFrame([self.last_candle])],
+                                                   ignore_index=True)
+                        self.plot_times.append(self.last_candle['T'])
+                        self.plot_opens.append(self.last_candle['open'])
+
                         if self.last_candle['T'] >= htf_data['T'].iloc[-1] + timedelta(minutes=HTF_TIMEFRAME_INT):
                             print("Adding htf candle")
                             htf_data = pd.concat([htf_data, pd.DataFrame([self.last_candle])], ignore_index=True)
@@ -250,6 +294,10 @@ class LiveTrader(BaseTrader):
         if self.current_position:
             final_price = ltf_data['close'].iloc[-1]
             self._close_live_position(final_price, "Finished trading")
+
+        self.full_data.set_index('T', inplace=True)
+        self.full_data.sort_index(inplace=True)
+        self.create_and_send_images()
 
 
 trader = LiveTrader("SOL")
