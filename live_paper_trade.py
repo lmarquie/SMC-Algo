@@ -223,7 +223,9 @@ class LiveTrader(BaseTrader):
             # Record trade
             trade = {
                 'entry_time': self.current_position['entry_time'],
+                'entry_idx': self.current_position['entry_idx'],
                 'exit_time': datetime.now(),
+                'exit_idx': self.iteration,
                 'direction': self.current_position['direction'],
                 'entry_price': self.current_position['entry_price'],
                 'exit_price': current_price,
