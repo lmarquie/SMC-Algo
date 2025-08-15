@@ -12,6 +12,8 @@ import certifi
 import websockets
 import json
 import matplotlib.pyplot as plt
+import os
+import shutil
 
 class LiveTrader(BaseTrader):
     def __init__(self, symbol):
@@ -62,7 +64,72 @@ class LiveTrader(BaseTrader):
         plt.close()
 
         send_telegram_image("summary.png", caption="All trades plotted")
-        return
+
+        if os.path.exists('trades'):
+            shutil.rmtree("trades")
+        os.makedirs("trades", exist_ok=True)
+        os.makedirs("trades/wins", exist_ok=True)
+        os.makedirs("trades/losses", exist_ok=True)
+        for i, trade in enumerate(self.trades):
+            entry_idx = trade['entry_idx']
+            exit_idx = trade['exit_idx']
+
+            plt.figure(figsize=(15, 8))
+            plt.margins(x=0.1)
+            plt.tight_layout()
+            fig, ax = plt.subplots()
+            print(f"Trade {i + 1}, entry {entry_idx}, fvg index {trade['fvg']['start_idx']}")
+
+            for idx in range(trade['fvg']['start_idx'] - 2, min(exit_idx+9, len(self.full_data) - 1)):
+                candle = self.full_data.iloc[idx]
+                boxplot_data = [[candle["low"], candle["open"], candle["close"], candle["high"]]]
+
+                if idx == entry_idx:
+                    boxprops = {'facecolor': 'green', 'alpha': 1}
+                elif idx == exit_idx:
+                    boxprops = {'facecolor': 'red', 'alpha': 1}
+                elif idx == self.full_data.index.get_loc(trade['fvg']['start_idx']):
+                    boxprops = {'facecolor': 'orange', 'alpha': 1}
+                elif idx in trade['mss']:
+                    boxprops = {'facecolor': 'yellow', 'alpha': 1}
+                elif idx in trade['bos']:
+                    boxprops = {'facecolor': 'blue', 'alpha': 1}
+                elif idx > entry_idx and idx < exit_idx:
+                    if candle["close"] >= candle["open"]:
+                        boxprops = {'facecolor': 'green', 'alpha': 0.4}
+                    else:
+                        boxprops = {'facecolor': 'red', 'alpha': 0.4}
+                else:
+                    boxprops = {'facecolor': 'white', 'alpha': 1.0}
+
+                ax.boxplot(
+                    boxplot_data,
+                    positions=[(idx-entry_idx+1) * 3],
+                    widths=2,
+                    showfliers=False,
+                    manage_ticks=True,
+                    medianprops={'linewidth': 0},
+                    boxprops=boxprops,
+                    patch_artist=True,
+                )
+
+            trade_direction = trade['direction'].upper()
+            trade_result = "WIN" if trade['pnl_dollar'] > 0 else "LOSS"
+            plt.title(f"Trade #{entry_idx}: {trade_direction} - {trade_result} (${trade['pnl_dollar']:.2f})")
+
+            ax.tick_params(axis='both', labelsize=6)
+            plt.tight_layout()
+
+            if trade in winning_trades:
+                plt.savefig(f"trades/wins/trade_{i+1}.png", dpi=600, bbox_inches="tight")
+                send_telegram_image(f"trades/wins/trade_{i+1}.png", caption=f"Trade #{entry_idx}: {trade_direction} - {trade_result} (${trade['pnl_dollar']:.2f})")
+                plt.close("all")
+            else:
+                plt.savefig(f"trades/losses/trade_{i+1}.png", dpi=600, bbox_inches="tight")
+                send_telegram_image(f"trades/losses/trade_{i+1}.png", caption=f"Trade #{entry_idx}: {trade_direction} - {trade_result} (${trade['pnl_dollar']:.2f})")
+                plt.close("all")
+
+            plt.close("all")
 
 
 
@@ -195,18 +262,18 @@ class LiveTrader(BaseTrader):
         """Run paper trading indefinitely or for specified duration"""
 
         if duration_minutes:
-            message = f"🚀 Starting {self.symbol} paper trading for {duration_minutes} minutes..."
+            message = f"🚀 Starting {self.symbol} paper trading for {duration_minutes} minutes...\n"
             print(message)
             start_time = datetime.now()
             end_time = start_time + timedelta(minutes=duration_minutes)
         else:
-            message = f"🚀 Starting {self.symbol} paper trading INDEFINITELY..."
+            message = f"🚀 Starting {self.symbol} paper trading INDEFINITELY...\n"
             print(message)
             print("Press Ctrl+C to stop the bot")
             end_time = None
 
         print(f"Trading symbol: {self.symbol}")
-        message += f"Trading symbol: {self.symbol}"
+        message += f"Trading symbol: {self.symbol}\n"
         print(f"Risk per trade: ${RISK_PER_TRADE}")
         message += f"Risk per trade: {RISK_PER_TRADE}"
 
@@ -266,10 +333,11 @@ class LiveTrader(BaseTrader):
                         ltf_data = ltf_data.iloc[-self.ltf_lookback:].reset_index(drop=True)
                         self.last_candle_timestamp = self.last_candle['T']
 
-                        self.full_data = pd.concat([self.full_data, pd.DataFrame([self.last_candle])],
-                                                   ignore_index=True)
+                        self.full_data = pd.concat([self.full_data, pd.DataFrame([self.last_candle])], ignore_index=True)
                         self.plot_times.append(self.last_candle['T'])
                         self.plot_opens.append(self.last_candle['open'])
+                        self.iteration = len(self.full_data) - 1
+
 
                         if self.last_candle['T'] >= htf_data['T'].iloc[-1] + timedelta(minutes=HTF_TIMEFRAME_INT):
                             print("Adding htf candle")
