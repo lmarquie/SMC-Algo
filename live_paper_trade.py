@@ -332,6 +332,8 @@ class LiveTrader(BaseTrader):
                     if not self.working_candle:
                         self.working_candle = candle
                     elif candle['T'] == self.working_candle['T']:
+                        self.working_candle['high'] = candle['high']
+                        self.working_candle['low'] = candle['low']
                         self.working_candle['close'] = candle['close']
                     else:
                         print("Adding ltf candle")
