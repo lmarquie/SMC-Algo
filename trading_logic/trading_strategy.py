@@ -524,7 +524,6 @@ class FVGStrategy:
                                     telegram_message += f"Direction: Long\n"
                                     telegram_message += f"Stop loss: ${position['original_stop_loss']:.4f} → ${position['stop_loss']:.4f} (swing low: ${best_swing_low:.4f}, confirmed after {confirmation_candles} candles)\n"
                                     telegram_message += f"Unrealized P&L: ${(current_price - position['entry_price']):.4f} ({(current_price - position['entry_price']) / position['entry_price'] * 100:.2f}%)\n"
-                                    telegram_message += f"Age: {position['age']} candles\n"
 
                                     send_telegram_message(telegram_message)
 
@@ -589,7 +588,6 @@ class FVGStrategy:
                                     telegram_message += f"Direction: Short\n"
                                     telegram_message += f"Stop loss: ${position['original_stop_loss']:.4f} → ${position['stop_loss']:.4f} (swing high: ${best_swing_high:.4f}, confirmed after {confirmation_candles} candles)\n"
                                     telegram_message += f"Unrealized P&L: ${(current_price - position['entry_price']):.4f} ({(current_price - position['entry_price']) / position['entry_price'] * 100:.2f}%)\n"
-                                    telegram_message += f"Age: {position['age']} candles\n"
 
                                     send_telegram_message(telegram_message)
 
