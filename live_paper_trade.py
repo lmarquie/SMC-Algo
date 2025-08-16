@@ -31,7 +31,7 @@ class LiveTrader(BaseTrader):
         self.ltf_lookback = 100
         self.htf_lookback = 50
 
-        self.last_candle = None
+        self.working_candle = None
         self.full_data = pd.DataFrame()
 
         self.plot_times = []
@@ -230,6 +230,8 @@ class LiveTrader(BaseTrader):
                 'entry_price': self.current_position['entry_price'],
                 'exit_price': current_price,
                 'size': self.current_position['size'],
+                'mss': self.current_position['mss'],
+                'bos': self.current_position['bos'],
                 'pnl_pct': pnl_pct,
                 'fvg': self.current_position['fvg'],
                 'pnl_dollar': pnl_dollar,
@@ -319,32 +321,33 @@ class LiveTrader(BaseTrader):
 
                     candle = await ws.recv()
                     candle = json.loads(candle)['data']
-                    T = datetime.fromtimestamp(candle['T'] / 1000)
+                    candle = {
+                        'T': datetime.fromtimestamp(candle['T'] / 1000),
+                        'open': float(candle['o']),
+                        'high': float(candle['h']),
+                        'low': float(candle['l']),
+                        'close': float(candle['c']),
+                    }
 
-                    if not self.last_candle:
-                        self.last_candle = {
-                            'T': datetime.fromtimestamp(candle['T'] / 1000),
-                            'open': float(candle['o']),
-                            'high': float(candle['h']),
-                            'low': float(candle['l']),
-                        }
-                    elif T == self.last_candle['T']:
-                        self.last_candle['close'] = float(candle['c'])
+                    if not self.working_candle:
+                        self.working_candle = candle
+                    elif candle['T'] == self.working_candle['T']:
+                        self.working_candle['close'] = candle['close']
                     else:
                         print("Adding ltf candle")
-                        ltf_data = pd.concat([ltf_data, pd.DataFrame([self.last_candle])], ignore_index=True)
+                        ltf_data = pd.concat([ltf_data, pd.DataFrame([self.working_candle])], ignore_index=True)
                         ltf_data = ltf_data.iloc[-self.ltf_lookback:].reset_index(drop=True)
-                        self.last_candle_timestamp = self.last_candle['T']
+                        self.last_candle_timestamp = self.working_candle['T']
 
-                        self.full_data = pd.concat([self.full_data, pd.DataFrame([self.last_candle])], ignore_index=True)
-                        self.plot_times.append(self.last_candle['T'])
-                        self.plot_opens.append(self.last_candle['open'])
+                        self.full_data = pd.concat([self.full_data, pd.DataFrame([self.working_candle])], ignore_index=True)
+                        self.plot_times.append(self.working_candle['T'])
+                        self.plot_opens.append(self.working_candle['open'])
                         self.iteration = len(self.full_data) - 1
 
 
-                        if self.last_candle['T'] >= htf_data['T'].iloc[-1] + timedelta(minutes=HTF_TIMEFRAME_INT):
+                        if self.working_candle['T'] >= htf_data['T'].iloc[-1] + timedelta(minutes=HTF_TIMEFRAME_INT):
                             print("Adding htf candle")
-                            htf_data = pd.concat([htf_data, pd.DataFrame([self.last_candle])], ignore_index=True)
+                            htf_data = pd.concat([htf_data, pd.DataFrame([self.working_candle])], ignore_index=True)
                             htf_data = htf_data.iloc[-self.htf_lookback:].reset_index(drop=True)
 
                         if cooldown_remaining and cooldown_remaining > 0:
@@ -352,8 +355,8 @@ class LiveTrader(BaseTrader):
                             await asyncio.sleep(1)
                             continue
 
-                        self.single_iteration(ltf_data=ltf_data, htf_data=htf_data, current_time=ltf_data['T'].iloc[-1], telegram=True)
-                        self.last_candle = None
+                        self.single_iteration(ltf_data=ltf_data, htf_data=htf_data, current_candle=candle, current_price=candle['open'], current_time=datetime.now(), telegram=True)
+                        self.working_candle = None
 
             except websockets.exceptions.ConnectionClosedError as e:
                 print(f"Connection closed, trying to reconnect in 30 seconds... ({e})")

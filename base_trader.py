@@ -23,9 +23,7 @@ class BaseTrader:
         self.current_position = None
         self.current_balance = balance
 
-    def single_iteration(self, ltf_data, htf_data, current_time, telegram=False):
-        current_candle = ltf_data.iloc[-1]
-        current_price = current_candle['close']
+    def single_iteration(self, ltf_data, htf_data, current_candle, current_price, current_time, telegram=False):
         current_low = current_candle['low']
         current_high = current_candle['high']
         print(f"Running iteration: time {current_time}, balance: ${self.current_balance:.2f}")
@@ -42,10 +40,10 @@ class BaseTrader:
             # Check if stop loss is hit
             if direction == 'long' and current_low <= stop_loss:
                 self._close_position(stop_loss, current_time)
-                self.last_close = current_candle['T']
+                self.last_close = current_time
             elif direction == 'short' and current_high >= stop_loss:
                 self._close_position(stop_loss, current_time)
-                self.last_close = current_candle['T']
+                self.last_close = current_time
 
         # Check for new entry if no position
         else:

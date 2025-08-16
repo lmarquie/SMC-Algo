@@ -69,7 +69,7 @@ class BacktestTrader(BaseTrader):
             self.plot_indices = np.append(self.plot_indices, self.iteration)
             self.plot_opens = np.append(self.plot_opens, current_open)
 
-            self.single_iteration(current_data, current_htf_data, current_time)
+            self.single_iteration(current_data, current_htf_data, current_data.iloc[-1], current_data['close'].iloc[-1], current_time)
 
         # Close any remaining position
         if self.current_position:
