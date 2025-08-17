@@ -161,15 +161,13 @@ class LiveTrader(BaseTrader):
             htf_data['T'] = pd.to_datetime(htf_data['T'], unit='ms')
             htf_data = htf_data.reset_index(drop=True)
 
-            # Get current price
-            current_price = self.client.get_current_price(self.symbol)
 
             if ltf_data.empty or htf_data.empty:
                 print(f"Failed to fetch market data for {self.symbol}")
                 return None, None, None
 
             self.last_candle_timestamp = ltf_data['T'].iloc[-1]
-            return ltf_data, htf_data, current_price
+            return ltf_data, htf_data
 
         except Exception as e:
             print(f"Error fetching live data for {self.symbol}: {e}")
@@ -282,7 +280,7 @@ class LiveTrader(BaseTrader):
         message += f"Risk per trade: {RISK_PER_TRADE}"
 
         send_telegram_message(message)
-        ltf_data, htf_data, current_price = await self.fetch_initial_data()
+        ltf_data, htf_data = await self.fetch_initial_data()
         self.full_data = ltf_data
 
         subscribe_msg = {
@@ -352,13 +350,14 @@ class LiveTrader(BaseTrader):
                             htf_data = pd.concat([htf_data, pd.DataFrame([self.working_candle])], ignore_index=True)
                             htf_data = htf_data.iloc[-self.htf_lookback:].reset_index(drop=True)
 
+                        self.working_candle = None
+
                         if cooldown_remaining and cooldown_remaining > 0:
                             print(f"⏳ COOLDOWN ACTIVE for {self.symbol}: {cooldown_remaining:.0f} seconds remaining")
                             await asyncio.sleep(1)
                             continue
 
                         self.single_iteration(ltf_data=ltf_data, htf_data=htf_data, current_candle=candle, current_price=candle['open'], current_time=datetime.now(), telegram=True)
-                        self.working_candle = None
 
             except websockets.exceptions.ConnectionClosedError as e:
                 print(f"Connection closed, trying to reconnect in 30 seconds... ({e})")

@@ -67,12 +67,12 @@ class BaseTrader:
         min_stop_distance = setup['entry_price'] * 0.0015
         if risk_amount < min_stop_distance:
             print("RISK AMOUNT ADJUSTED TO MIN STOP DISTANCE")
-        risk_amount = max(risk_amount, min_stop_distance)
+            risk_amount = min_stop_distance
 
         position_size, stop_loss = self._calculate_position_size(risk_amount, setup['entry_price'], setup, self.symbol)
 
         # Calculate expected loss if stop is hit
-        final_risk_amount = abs(setup['entry_price'] - stop_loss) / position_size
+        final_risk_amount = abs(setup['entry_price'] - stop_loss)
         expected_loss = position_size * final_risk_amount
 
         position = {

@@ -20,7 +20,7 @@ class HyperliquidClient:
         self.ws_url = "wss://api.hyperliquid.xyz/ws"
 
         # Initialize the official SDK client
-        self.info_client = Info(constants.TESTNET_API_URL, skip_ws=True)
+        self.info_client = Info(constants.MAINNET_API_URL, skip_ws=True)
 
         # Setup logging
         self.logger = logging.getLogger(__name__)
@@ -88,6 +88,8 @@ class HyperliquidClient:
         except Exception as e:
             self.logger.error(f"Error fetching OHLCV data: {e}")
             return pd.DataFrame()
+
+    '''
 
     def get_current_price(self, symbol: str) -> Optional[float]:
         """Get current price for a symbol using POST /info allMids"""
@@ -305,3 +307,5 @@ class HyperliquidClient:
         """Close the client connection"""
         if hasattr(self, 'session'):
             self.session.close()
+        
+    '''
