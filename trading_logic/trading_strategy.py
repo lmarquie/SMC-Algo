@@ -5,6 +5,7 @@ import logging
 from config import *
 from datetime import datetime
 from helpers.telegram_setup import send_telegram_message
+import math
 
 
 class FVGStrategy:
@@ -18,8 +19,8 @@ class FVGStrategy:
         self.bullish_fvg_touch = 0
         self.bearish_fvg_touch = 0
 
-        self.max_fvg_to_indicator_dist = 20
-        self.max_entry_indicator_dist = 20
+        self.max_fvg_to_indicator_dist = 40
+        self.max_entry_indicator_dist = 40
 
         self.fvg_lookback = self.max_fvg_to_indicator_dist + self.max_entry_indicator_dist
         self.existing_fvg_idxs = []
@@ -28,8 +29,7 @@ class FVGStrategy:
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
 
-    def update_trade_setups(self, df: pd.DataFrame):
-        current_idx = df.index[-1]
+    def update_trade_setups(self):
         for setup in self.trade_setups:
             if setup['time_remaining'] <= 0:
                 self.trade_setups.remove(setup)
@@ -116,7 +116,7 @@ class FVGStrategy:
         larger_trend = self.identify_larger_trend(htf_df)
 
         # Make trend confidence requirement stricter
-        if larger_trend['confidence'] < 0.50:  # Set to 60% confidence
+        if larger_trend['confidence'] < 0.50:
             return None
 
         # Step 3: Look for reversal of the pullback
@@ -154,8 +154,8 @@ class FVGStrategy:
                         # Use the LOWER of the two stops (FVG-based or structure-based)
                         stop_loss = min(stop_loss, swing_stop)
 
-                    bos_idxs = [idx for idx, val in df_analyzed['bullish_bos'].items() if val == 1]
-                    mss_idxs = [idx for idx, val in df_analyzed['bullish_mss'].items() if val == 1]
+                    bos_idxs = [df_analyzed.index[-1]] if df_analyzed["bullish_bos"].iloc[-1] else []
+                    mss_idxs = [df_analyzed.index[-1]] if df_analyzed["bullish_bos"].iloc[-1] else []
                     self.trade_setups.append({
                         'direction': 'long',
                         'stop_loss': stop_loss,
@@ -192,8 +192,8 @@ class FVGStrategy:
                         # Use the HIGHER of the two stops (FVG-based or structure-based)
                         stop_loss = max(stop_loss, swing_stop)
 
-                    bos_idxs = [idx for idx, val in df_analyzed['bearish_bos'].items() if val == 1]
-                    mss_idxs = [idx for idx, val in df_analyzed['bearish_mss'].items() if val == 1]
+                    bos_idxs = [df_analyzed.index[-1]] if df_analyzed["bearish_bos"].iloc[-1] else []
+                    mss_idxs = [df_analyzed.index[-1]] if df_analyzed["bearish_mss"].iloc[-1] else []
                     self.trade_setups.append({
                         'direction': 'short',
                         'stop_loss': stop_loss,
@@ -206,140 +206,6 @@ class FVGStrategy:
                         'reason': f'Downtrend continuation: Bullish pullback + Bearish reversal + Displacement + FVG. Trend confidence: {larger_trend["confidence"]:.2f}'
                     })
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-    def _create_bullish_trade(self, df: pd.DataFrame, fvgs: List[Dict], current_price: float,
-                                larger_trend: Dict) -> Optional[Dict]:
-        """Check for bullish reversal to continue uptrend"""
-        # Look for bullish FVGs that price is touching
-        bullish_fvgs = [fvg for fvg in fvgs if fvg['type'] == 'bullish']
-
-        for fvg in bullish_fvgs:
-            if self.analyzer.check_fvg_touch(current_price, fvg):
-                self.bullish_fvg_touch += 1
-                # Analyze the DataFrame to get structure columns
-                df_analyzed = self.analyzer.analyze_structure(df)
-                fvg_distance = df.index[-1] - fvg['start_idx']
-                recent_df = df_analyzed.tail(fvg_distance)[:self.max_fvg_to_indicator_dist + 1]
-
-                for i in range(0, self.max_fvg_to_indicator_dist+1):
-                    cropped_df = recent_df[0:i]
-                    if (cropped_df['bearish_bos'].sum() > 0 or cropped_df['bearish_mss'].sum() > 0) and \
-                            (cropped_df['bullish_bos'].sum() == 0 and cropped_df['bullish_mss'].sum() == 0):
-                        return None
-
-                # Look for bullish BOS or MSS (reversal signal) - make stricter
-                has_bullish_reversal = (
-                        recent_df['bullish_bos'].sum() > 0 or
-                        recent_df['bullish_mss'].sum() > 0
-                )
-
-                if has_bullish_reversal:
-                    # Exit if entry is too far from the last indicator
-                    indicator_positions = [row[0] for row in recent_df.iterrows() if row[1].to_dict()['bullish_bos'] == 1 or row[1].to_dict()['bullish_mss'] == 1]
-                    last_indicator_position = indicator_positions[-1]
-                    if df.index[-1] - last_indicator_position > fvg_distance / 2:
-                        return None
-
-                    # Calculate entry levels
-                    entry_price = current_price
-                    stop_loss = fvg['bottom'] - STOP_LOSS_BUFFER
-
-                    # Find nearest swing low for structure-based stop
-                    nearest_swing_low = self._find_nearest_swing_low(df_analyzed, current_price)
-                    if nearest_swing_low:
-                        swing_stop = nearest_swing_low - STOP_LOSS_BUFFER
-                        # Use the LOWER of the two stops (FVG-based or structure-based)
-                        stop_loss = min(stop_loss, swing_stop)
-
-                    bos_idxs = [idx for idx, val in recent_df['bullish_bos'].items() if val == 1]
-                    mss_idxs = [idx for idx, val in recent_df['bullish_mss'].items() if val == 1]
-                    return {
-                        'direction': 'long',
-                        'entry_price': entry_price,
-                        'stop_loss': stop_loss,
-                        'fvg': fvg,
-                        'bos': bos_idxs,
-                        'mss': mss_idxs,
-                        'time_remaining': last_indicator_position - fvg['start_idx'],
-                        'larger_trend': larger_trend['trend'],
-                        'trend_confidence': larger_trend['confidence'],
-                        'reason': f'Uptrend continuation: Bearish pullback + Bullish reversal + Displacement + FVG. Trend confidence: {larger_trend["confidence"]:.2f}'
-                    }
-
-        return None
-
-    def _create_bearish_trade(self, df: pd.DataFrame, fvgs: List[Dict], current_price: float,
-                                larger_trend: Dict) -> Optional[Dict]:
-        """Check for bearish reversal to continue downtrend"""
-        # Look for bearish FVGs that price is touching
-        bearish_fvgs = [fvg for fvg in fvgs if fvg['type'] == 'bearish']
-
-        for fvg in bearish_fvgs:
-            if self.analyzer.check_fvg_touch(current_price, fvg):
-                self.bearish_fvg_touch += 1
-                # Analyze the DataFrame to get structure columns
-                df_analyzed = self.analyzer.analyze_structure(df)
-                fvg_distance = df.index[-1] - fvg['start_idx']
-                recent_df = df_analyzed.tail(fvg_distance)[:max(fvg_distance, self.max_fvg_to_indicator_dist + 1)]
-
-                for i in range(0, self.max_fvg_to_indicator_dist + 1):
-                    cropped_df = recent_df[0:i]
-                    if (cropped_df['bullish_bos'].sum() > 0 or cropped_df['bullish_mss'].sum() > 0) and \
-                            (cropped_df['bearish_bos'].sum() == 0 and cropped_df['bearish_mss'].sum() == 0):
-                        return None
-
-                # Look for bearish BOS or MSS (reversal signal) - make stricter
-                has_bearish_reversal = (
-                        recent_df['bearish_bos'].sum() > 0 or
-                        recent_df['bearish_mss'].sum() > 0
-                )
-
-                if has_bearish_reversal:
-                    # Exit if entry is too far from the last indicator
-                    indicator_positions = [row[0] for row in recent_df.iterrows() if row[1].to_dict()['bearish_bos'] == 1 or row[1].to_dict()['bearish_mss'] == 1]
-                    last_indicator_position = indicator_positions[-1]
-                    if df.index[-1] - last_indicator_position > fvg_distance / 2:
-                        return None
-
-                    # Calculate entry levels
-                    entry_price = current_price
-                    stop_loss = fvg['top'] + STOP_LOSS_BUFFER
-
-                    # Find nearest swing high for structure-based stop
-                    nearest_swing_high = self._find_nearest_swing_high(df_analyzed, current_price)
-                    if nearest_swing_high:
-                        swing_stop = nearest_swing_high + STOP_LOSS_BUFFER
-                        # Use the HIGHER of the two stops (FVG-based or structure-based)
-                        stop_loss = max(stop_loss, swing_stop)
-
-                    bos_idxs = [idx for idx, val in recent_df['bearish_bos'].items() if val == 1]
-                    mss_idxs = [idx for idx, val in recent_df['bearish_mss'].items() if val == 1]
-                    return {
-                        'direction': 'short',
-                        'entry_price': entry_price,
-                        'stop_loss': stop_loss,
-                        'fvg': fvg,
-                        'bos': bos_idxs,
-                        'mss': mss_idxs,
-                        'time_remaining': last_indicator_position - fvg['start_idx'],
-                        'larger_trend': larger_trend['trend'],
-                        'trend_confidence': larger_trend['confidence'],
-                        'reason': f'Downtrend continuation: Bullish pullback + Bearish reversal + Displacement + FVG. Trend confidence: {larger_trend["confidence"]:.2f}'
-                    }
-
-        return None
 
     def should_exit_position(self, df: pd.DataFrame, position: Dict) -> bool:
         """Check if current position should be exited"""

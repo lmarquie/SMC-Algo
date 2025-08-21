@@ -9,6 +9,9 @@ from datetime import datetime, timedelta
 from hyperliquid.info import Info
 from hyperliquid.utils import constants
 from credentials import HYPERLIQUID_ACCOUNT_ADDRESS
+import time
+from eth_account import Account
+from eth_account.messages import encode_defunct
 
 
 class HyperliquidClient:
@@ -20,7 +23,7 @@ class HyperliquidClient:
         self.ws_url = "wss://api.hyperliquid.xyz/ws"
 
         # Initialize the official SDK client
-        self.info_client = Info(constants.MAINNET_API_URL, skip_ws=True)
+        self.info_client = Info(constants.TESTNET_API_URL, skip_ws=True)
 
         # Setup logging
         self.logger = logging.getLogger(__name__)
@@ -88,6 +91,52 @@ class HyperliquidClient:
         except Exception as e:
             self.logger.error(f"Error fetching OHLCV data: {e}")
             return pd.DataFrame()
+
+
+    def place_order(self, symbol, isBuy, size, order_type, price=0, stop_loss=None, leverage=20):
+        try:
+            asset_index = 2
+            if symbol == "SOL":
+                asset_index = 2
+
+            url = f"{self.base_url}/exchange"
+            order = {
+                "type": "order",
+                "orders": [{
+                    "a": asset_index,
+                    "b": isBuy,
+                    "p": str(price),
+                    "s": str(size),
+                    "t": order_type,
+                    "r": False,
+                }],
+                "grouping": "na",
+                "nonce": int(time.time() * 1000),
+                "vaultAddress": HYPERLIQUID_ACCOUNT_ADDRESS,
+            }
+
+            payload = {
+                "action": order,
+            }
+
+            acct = Account.from_key(self.api_key)
+            message = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+            signed_msg = acct.sign_message(encode_defunct(text=message))
+            payload["signature"] = signed_msg.signature.hex()
+
+            print(payload)
+
+            response = self.session.post(url, json=payload)
+            response.raise_for_status()
+
+            result = response.json()
+            self.logger.info(f"Order placed with {leverage}x leverage: {result}")
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Error placing order: {e}")
+            return {"error": str(e)}
 
     '''
 

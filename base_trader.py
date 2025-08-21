@@ -28,8 +28,6 @@ class BaseTrader:
         current_high = current_candle['high']
         print(f"Running iteration: time {current_time}, balance: ${self.current_balance:.2f}")
 
-        self.strategy.update_trade_setups(ltf_data)
-
         if self.current_position:
             stop_loss = self.current_position['stop_loss']
             direction = self.current_position['direction']
@@ -47,16 +45,26 @@ class BaseTrader:
 
         # Check for new entry if no position
         else:
-            self.strategy.check_entry_conditions(ltf_data, htf_data)
+            self.strategy.check_entry_conditions(ltf_data, htf_data) # Add potential trades with countdowns
             self.execute_valid_orders(current_price, current_time)
+
+        self.strategy.update_trade_setups()
 
 
     def execute_valid_orders(self, current_price, current_time):
+        best_setup = None
+        max_size = 0
+
         for setup in self.strategy.trade_setups:
             if self.analyzer.check_fvg_touch(current_price, setup["fvg"]):
-                setup["entry_price"] = current_price
-                self._open_position(setup, current_price, current_time)
-                return
+                size = abs(setup["fvg"]["top"] - setup["fvg"]["bottom"])
+                if size > max_size:
+                    best_setup = setup
+                    max_size = size
+
+        if best_setup:
+            best_setup["entry_price"] = current_price
+            self._open_position(best_setup, current_price, current_time)
 
 
     def create_open_order(self, setup: Dict, current_price: float, timestamp):

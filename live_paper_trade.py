@@ -5,7 +5,6 @@ from config import *
 from credentials import *
 from datetime import datetime, timedelta
 import asyncio
-import time
 from base_trader import BaseTrader
 import ssl
 import certifi
@@ -14,6 +13,7 @@ import json
 import matplotlib.pyplot as plt
 import os
 import shutil
+import ccxt
 
 class LiveTrader(BaseTrader):
     def __init__(self, symbol):
@@ -24,7 +24,6 @@ class LiveTrader(BaseTrader):
             HYPERLIQUID_SUBACCOUNT,
         )
         self.last_position_close_time = None  # Track last position close time for cooldown
-        self.last_candle_timestamp = None
 
         self.ssl_context = ssl.create_default_context(cafile=certifi.where())
 
@@ -33,6 +32,8 @@ class LiveTrader(BaseTrader):
 
         self.working_candle = None
         self.full_data = pd.DataFrame()
+        self.ltf_data = pd.DataFrame()
+        self.htf_data = pd.DataFrame()
 
         self.plot_times = []
         self.plot_opens = []
@@ -166,7 +167,6 @@ class LiveTrader(BaseTrader):
                 print(f"Failed to fetch market data for {self.symbol}")
                 return None, None, None
 
-            self.last_candle_timestamp = ltf_data['T'].iloc[-1]
             return ltf_data, htf_data
 
         except Exception as e:
@@ -260,6 +260,47 @@ class LiveTrader(BaseTrader):
             print(f"Error closing position: {e}")
 
 
+    async def handle_candle_data(self, candle):
+
+        if not self.working_candle:
+            self.working_candle = candle
+        elif candle['T'] == self.working_candle['T']:
+            self.working_candle['high'] = candle['high']
+            self.working_candle['low'] = candle['low']
+            self.working_candle['close'] = candle['close']
+        else:
+            print("Adding ltf candle")
+            self.ltf_data = pd.concat([self.ltf_data, pd.DataFrame([self.working_candle])], ignore_index=True)
+            self.ltf_data = self.ltf_data.iloc[-self.ltf_lookback:].reset_index(drop=True)
+
+            self.full_data = pd.concat([self.full_data, pd.DataFrame([self.working_candle])], ignore_index=True)
+            self.plot_times.append(self.working_candle['T'])
+            self.plot_opens.append(self.working_candle['open'])
+            self.iteration = len(self.full_data) - 1
+
+            if self.working_candle['T'] >= self.htf_data['T'].iloc[-1] + timedelta(minutes=HTF_TIMEFRAME_INT):
+                print("Adding htf candle")
+                self.htf_data = pd.concat([self.htf_data, pd.DataFrame([self.working_candle])], ignore_index=True)
+                self.htf_data = self.htf_data.iloc[-self.htf_lookback:].reset_index(drop=True)
+
+            self.working_candle = None
+            self.single_iteration(ltf_data=self.ltf_data, htf_data=self.htf_data, current_candle=candle,
+                                  current_price=candle['open'], current_time=datetime.now(), telegram=True)
+
+
+    async def handle_price_data(self, price_data):
+        pass
+
+
+    async def route_message(self, message):
+        if message['channel'] == 'candle':
+            await self.handle_candle_data(message['data'])
+        elif message['channel'] == 'l2Book':
+            price = message['data']['levels'][0][-1]['px']
+            await self.handle_price_data(price)
+
+
+
     async def run_paper_trading(self, duration_minutes=None):
         """Run paper trading indefinitely or for specified duration"""
 
@@ -280,18 +321,13 @@ class LiveTrader(BaseTrader):
         message += f"Risk per trade: {RISK_PER_TRADE}"
 
         send_telegram_message(message)
-        ltf_data, htf_data = await self.fetch_initial_data()
-        self.full_data = ltf_data
+        self.ltf_data, self.htf_data = await self.fetch_initial_data()
+        self.full_data = self.ltf_data
 
-        subscribe_msg = {
-            "method": "subscribe",
-            "subscription": {
-                "type": "candle",
-                "coin": "SOL",
-                "interval": "1m"
-            }
-        }
-        url = "wss://api.hyperliquid.xyz/ws"
+        dex = ccxt.hyperliquid({
+            "walletAddress": HYPERLIQUID_ACCOUNT_ADDRESS,
+            "privateKey": HYPERLIQUID_API_KEY,
+        })
 
         while True:
             if end_time and datetime.now() >= end_time:
@@ -300,74 +336,29 @@ class LiveTrader(BaseTrader):
                 send_telegram_message("🛑 Bot stopped by user")
                 break
 
-            # Check the cooldown period
-            cooldown_remaining = None
-            if self.last_position_close_time:
-                time_since_close = datetime.now() - self.last_position_close_time
-                cooldown_remaining = 300 - time_since_close.total_seconds()  # 5 minutes = 300 seconds
-
             try:
-                async with websockets.connect(
-                    url,
-                    ssl=self.ssl_context,
-                    ping_interval=20,
-                    ping_timeout=20,
-                    close_timeout=5
-                ) as ws:
-                    await ws.send(json.dumps(subscribe_msg))
-                    await ws.recv()
+                current_candle = dex.fetch_ohlcv(self.symbol + '/USDC:USDC', timeframe='1m', limit=1)
+                current_candle = {
+                    'T': datetime.fromtimestamp(current_candle[0][0] / 1000),
+                    'open': current_candle[0][1],
+                    'high': current_candle[0][2],
+                    'low': current_candle[0][3],
+                    'close': current_candle[0][4],
+                }
 
-                    candle = await ws.recv()
-                    candle = json.loads(candle)['data']
-                    candle = {
-                        'T': datetime.fromtimestamp(candle['T'] / 1000),
-                        'open': float(candle['o']),
-                        'high': float(candle['h']),
-                        'low': float(candle['l']),
-                        'close': float(candle['c']),
-                    }
+                if self.last_position_close_time:
+                    if datetime.now() - self.last_position_close_time > timedelta(minutes=5):
+                        continue
 
-                    if not self.working_candle:
-                        self.working_candle = candle
-                    elif candle['T'] == self.working_candle['T']:
-                        self.working_candle['high'] = candle['high']
-                        self.working_candle['low'] = candle['low']
-                        self.working_candle['close'] = candle['close']
-                    else:
-                        print("Adding ltf candle")
-                        ltf_data = pd.concat([ltf_data, pd.DataFrame([self.working_candle])], ignore_index=True)
-                        ltf_data = ltf_data.iloc[-self.ltf_lookback:].reset_index(drop=True)
-                        self.last_candle_timestamp = self.working_candle['T']
+                await self.handle_candle_data(current_candle)
 
-                        self.full_data = pd.concat([self.full_data, pd.DataFrame([self.working_candle])], ignore_index=True)
-                        self.plot_times.append(self.working_candle['T'])
-                        self.plot_opens.append(self.working_candle['open'])
-                        self.iteration = len(self.full_data) - 1
-
-
-                        if self.working_candle['T'] >= htf_data['T'].iloc[-1] + timedelta(minutes=HTF_TIMEFRAME_INT):
-                            print("Adding htf candle")
-                            htf_data = pd.concat([htf_data, pd.DataFrame([self.working_candle])], ignore_index=True)
-                            htf_data = htf_data.iloc[-self.htf_lookback:].reset_index(drop=True)
-
-                        self.working_candle = None
-
-                        if cooldown_remaining and cooldown_remaining > 0:
-                            print(f"⏳ COOLDOWN ACTIVE for {self.symbol}: {cooldown_remaining:.0f} seconds remaining")
-                            await asyncio.sleep(1)
-                            continue
-
-                        self.single_iteration(ltf_data=ltf_data, htf_data=htf_data, current_candle=candle, current_price=candle['open'], current_time=datetime.now(), telegram=True)
-
-            except websockets.exceptions.ConnectionClosedError as e:
-                print(f"Connection closed, trying to reconnect in 30 seconds... ({e})")
-                await asyncio.sleep(30)
             except Exception as e:
                 print(f"Unexpected error, attempting to continue in 60 seconds ({e})")
                 await asyncio.sleep(60)
 
+
         if self.current_position:
-            final_price = ltf_data['close'].iloc[-1]
+            final_price = self.ltf_data['close'].iloc[-1]
             self._close_live_position(final_price, "Finished trading")
 
         self.create_and_send_images()
