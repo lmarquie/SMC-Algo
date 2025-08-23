@@ -105,6 +105,7 @@ async def run_real_data_backtest(symbol, method):
         os.makedirs("trades/wins", exist_ok=True)
         os.makedirs("trades/losses", exist_ok=True)
         for i, trade in enumerate(trades):
+
             entry_idx = trade['entry_idx']
             exit_idx = trade['exit_idx']
 
@@ -124,10 +125,9 @@ async def run_real_data_backtest(symbol, method):
                     boxprops = {'facecolor': 'red', 'alpha': 1}
                 elif idx == data.index.get_loc(trade['fvg']['start_idx']):
                     boxprops = {'facecolor': 'orange', 'alpha': 1}
-                elif idx in trade['mss']:
-                    boxprops = {'facecolor': 'yellow', 'alpha': 1}
-                elif idx in trade['bos']:
-                    boxprops = {'facecolor': 'blue', 'alpha': 1}
+                elif idx == trade['indicator']:
+                    color = 'yellow' if trade['indicator_type'] == 'mss' else 'blue'
+                    boxprops = {'facecolor': color, 'alpha': 1}
                 elif idx > entry_idx and idx < exit_idx:
                     if candle["close"] >= candle["open"]:
                         boxprops = {'facecolor': 'green', 'alpha': 0.4}
@@ -172,6 +172,6 @@ async def run_real_data_backtest(symbol, method):
 
 
 SYMBOL = "SOL"
-METHOD = "hyperliquid"
+METHOD = "binance"
 if __name__ == "__main__":
     asyncio.run(run_real_data_backtest(SYMBOL, METHOD))

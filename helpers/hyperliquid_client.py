@@ -23,7 +23,7 @@ class HyperliquidClient:
         self.ws_url = "wss://api.hyperliquid.xyz/ws"
 
         # Initialize the official SDK client
-        self.info_client = Info(constants.TESTNET_API_URL, skip_ws=True)
+        self.info_client = Info(constants.MAINNET_API_URL, skip_ws=True)
 
         # Setup logging
         self.logger = logging.getLogger(__name__)

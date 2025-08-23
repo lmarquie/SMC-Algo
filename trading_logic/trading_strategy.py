@@ -3,7 +3,7 @@ from typing import Dict, List, Optional
 from trading_logic.structure_analysis import StructureAnalyzer
 import logging
 from config import *
-from datetime import datetime
+from datetime import datetime, timedelta
 from helpers.telegram_setup import send_telegram_message
 import math
 
@@ -12,15 +12,15 @@ class FVGStrategy:
     def __init__(self):
         self.analyzer = StructureAnalyzer()
         self.active_fvgs = []
-        self.trade_setups = []
+        self.active_setups = []
         self.last_analysis_time = None
         self.current_position = None
         self.fvg_count = 0
         self.bullish_fvg_touch = 0
         self.bearish_fvg_touch = 0
 
-        self.max_fvg_to_indicator_dist = 40
-        self.max_entry_indicator_dist = 40
+        self.max_fvg_to_indicator_dist = 20
+        self.max_entry_indicator_dist = 20
 
         self.fvg_lookback = self.max_fvg_to_indicator_dist + self.max_entry_indicator_dist
         self.existing_fvg_idxs = []
@@ -29,12 +29,16 @@ class FVGStrategy:
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
 
-    def update_trade_setups(self):
-        for setup in self.trade_setups:
-            if setup['time_remaining'] <= 0:
-                self.trade_setups.remove(setup)
-            else:
-                setup['time_remaining'] -= 1
+    def update_active_setups(self, df):
+        for setup in self.active_setups:
+            if df['T'].iloc[-1] - setup['pitch_time'] > timedelta(minutes=self.max_entry_indicator_dist):
+                self.active_setups.remove(setup)
+            elif setup['direction'] == 'long':
+                if df['low'].iloc[-1] <= setup['fvg']['bottom']:
+                    self.active_setups.remove(setup)
+            elif setup['direction'] == 'short':
+                if df['high'].iloc[-1] >= setup['fvg']['top']:
+                    self.active_setups.remove(setup)
 
 
     def update_fvgs(self, df: pd.DataFrame) -> List[Dict]:
@@ -154,18 +158,15 @@ class FVGStrategy:
                         # Use the LOWER of the two stops (FVG-based or structure-based)
                         stop_loss = min(stop_loss, swing_stop)
 
-                    bos_idxs = [df_analyzed.index[-1]] if df_analyzed["bullish_bos"].iloc[-1] else []
-                    mss_idxs = [df_analyzed.index[-1]] if df_analyzed["bullish_bos"].iloc[-1] else []
-                    self.trade_setups.append({
+                    self.active_setups.append({
                         'direction': 'long',
                         'stop_loss': stop_loss,
                         'fvg': fvg,
-                        'bos': bos_idxs,
-                        'mss': mss_idxs,
-                        'time_remaining': df.index[-1] - fvg['start_idx'],
+                        'indicator': df.index[-1],
+                        'indicator_type': 'bos' if df_analyzed["bullish_bos"].iloc[-1] else 'mss',
+                        'pitch_time': df['T'].iloc[-1],
                         'larger_trend': larger_trend['trend'],
                         'trend_confidence': larger_trend['confidence'],
-                        'reason': f'Uptrend continuation: Bearish pullback + Bullish reversal + Displacement + FVG. Trend confidence: {larger_trend["confidence"]:.2f}'
                     })
 
 
@@ -192,18 +193,15 @@ class FVGStrategy:
                         # Use the HIGHER of the two stops (FVG-based or structure-based)
                         stop_loss = max(stop_loss, swing_stop)
 
-                    bos_idxs = [df_analyzed.index[-1]] if df_analyzed["bearish_bos"].iloc[-1] else []
-                    mss_idxs = [df_analyzed.index[-1]] if df_analyzed["bearish_mss"].iloc[-1] else []
-                    self.trade_setups.append({
+                    self.active_setups.append({
                         'direction': 'short',
                         'stop_loss': stop_loss,
                         'fvg': fvg,
-                        'bos': bos_idxs,
-                        'mss': mss_idxs,
-                        'time_remaining': df.index[-1] - fvg['start_idx'],
+                        'indicator': df.index[-1],
+                        'indicator_type': 'bos' if df_analyzed["bearish_bos"].iloc[-1] else 'mss',
+                        'pitch_time': df['T'].iloc[-1],
                         'larger_trend': larger_trend['trend'],
                         'trend_confidence': larger_trend['confidence'],
-                        'reason': f'Downtrend continuation: Bullish pullback + Bearish reversal + Displacement + FVG. Trend confidence: {larger_trend["confidence"]:.2f}'
                     })
 
 

@@ -8,8 +8,6 @@ import asyncio
 from base_trader import BaseTrader
 import ssl
 import certifi
-import websockets
-import json
 import matplotlib.pyplot as plt
 import os
 import shutil
@@ -17,13 +15,12 @@ import ccxt
 
 class LiveTrader(BaseTrader):
     def __init__(self, symbol):
-        super().__init__(symbol, self._open_live_position, self._close_live_position, 10_000)
+        super().__init__(symbol, 10_000)
 
         self.client = HyperliquidClient(
             HYPERLIQUID_API_KEY,
             HYPERLIQUID_SUBACCOUNT,
         )
-        self.last_position_close_time = None  # Track last position close time for cooldown
 
         self.ssl_context = ssl.create_default_context(cafile=certifi.where())
 
@@ -38,12 +35,15 @@ class LiveTrader(BaseTrader):
         self.plot_times = []
         self.plot_opens = []
 
+        self.current_price = 0
+        self.last_price = 0
+
 
     def create_and_send_images(self):
-        plt.plot(self.plot_times, self.plot_opens, color="blue", alpha=0.5, linewidth=1)
-
         winning_trades = [t for t in self.trades if t['pnl_dollar'] > 0]
         losing_trades = [t for t in self.trades if t['pnl_dollar'] < 0]
+
+        plt.plot(self.plot_times, self.plot_opens, color="blue", alpha=0.5, linewidth=1)
 
         for trade in winning_trades:
             entry_idx = trade["entry_time"]
@@ -61,10 +61,8 @@ class LiveTrader(BaseTrader):
                      [trade["entry_price"], trade["exit_price"]],  # y-coordinates of the two points
                      color='red', linestyle='--', linewidth=5)
 
-        plt.savefig("summary.png")
+        plt.savefig("backtest.png")
         plt.close()
-
-        send_telegram_image("summary.png", caption="All trades plotted")
 
         if os.path.exists('trades'):
             shutil.rmtree("trades")
@@ -91,10 +89,9 @@ class LiveTrader(BaseTrader):
                     boxprops = {'facecolor': 'red', 'alpha': 1}
                 elif idx == self.full_data.index.get_loc(trade['fvg']['start_idx']):
                     boxprops = {'facecolor': 'orange', 'alpha': 1}
-                elif idx in trade['mss']:
-                    boxprops = {'facecolor': 'yellow', 'alpha': 1}
-                elif idx in trade['bos']:
-                    boxprops = {'facecolor': 'blue', 'alpha': 1}
+                elif idx in trade['indicator']:
+                    color = 'yellow' if trade['indicator_type'] == 'mss' else 'blue'
+                    boxprops = {'facecolor': color, 'alpha': 1}
                 elif idx > entry_idx and idx < exit_idx:
                     if candle["close"] >= candle["open"]:
                         boxprops = {'facecolor': 'green', 'alpha': 0.4}
@@ -105,7 +102,7 @@ class LiveTrader(BaseTrader):
 
                 ax.boxplot(
                     boxplot_data,
-                    positions=[(idx-entry_idx+1) * 3],
+                    positions=[(idx - entry_idx + 1) * 3],
                     widths=2,
                     showfliers=False,
                     manage_ticks=True,
@@ -122,21 +119,14 @@ class LiveTrader(BaseTrader):
             plt.tight_layout()
 
             if trade in winning_trades:
-                plt.savefig(f"trades/wins/trade_{i+1}.png", dpi=600, bbox_inches="tight")
-                send_telegram_image(f"trades/wins/trade_{i+1}.png", caption=f"Trade #{entry_idx}: {trade_direction} - {trade_result} (${trade['pnl_dollar']:.2f})")
-                plt.close("all")
+                plt.savefig(f"trades/wins/trade_{i + 1}.png", dpi=600, bbox_inches="tight")
             else:
-                plt.savefig(f"trades/losses/trade_{i+1}.png", dpi=600, bbox_inches="tight")
-                send_telegram_image(f"trades/losses/trade_{i+1}.png", caption=f"Trade #{entry_idx}: {trade_direction} - {trade_result} (${trade['pnl_dollar']:.2f})")
-                plt.close("all")
+                plt.savefig(f"trades/losses/trade_{i + 1}.png", dpi=600, bbox_inches="tight")
 
             plt.close("all")
 
 
-
-
     async def fetch_initial_data(self):
-        """Fetch live market data"""
         try:
             print(f"{datetime.now()}, balance {self.current_balance}...")
 
@@ -174,94 +164,7 @@ class LiveTrader(BaseTrader):
             return None, None, None
 
 
-    def _open_live_position(self, setup, current_price, current_time):
-        """Open a new position"""
-        self.current_position = self.create_open_order(setup, current_price, current_time)
-        if self.current_position is not None:
-            telegram_text = ""
-            telegram_text += "===== New Position Opened =====\n"
-            telegram_text += f"Direction: {self.current_position['direction']}\n"
-            telegram_text += f"Entry price: ${self.current_position['entry_price']:.4f}\n"
-            telegram_text += f"Stop loss: ${self.current_position['stop_loss']:.4f}\n"
-            telegram_text += f"Position size: {self.current_position['size']:.4f}\n"
-
-            send_telegram_message(telegram_text)
-
-
-    def _close_live_position(self, current_price, reason):
-        """Close current position"""
-        if not self.current_position:
-            return
-        try:
-            # Calculate P&L
-            if self.current_position['direction'] == 'long':
-                pnl_pct = (current_price - self.current_position['entry_price']) / self.current_position['entry_price']
-            else:
-                pnl_pct = (self.current_position['entry_price'] - current_price) / self.current_position['entry_price']
-
-            # Calculate dollar P&L - FIXED: Use position size × price difference
-            price_diff = abs(current_price - self.current_position['entry_price'])
-            pnl_dollar = self.current_position['size'] * price_diff
-
-            # Apply direction
-            if self.current_position['direction'] == 'long':
-                pnl_dollar = pnl_dollar if current_price > self.current_position['entry_price'] else -pnl_dollar
-            else:
-                pnl_dollar = pnl_dollar if current_price < self.current_position['entry_price'] else -pnl_dollar
-
-            pnl_dollar -= 40
-            # Debug P&L calculation
-            print(f"P&L Debug: Entry: ${self.current_position['entry_price']:.4f}, Exit: ${current_price:.4f}")
-            print(f"P&L Debug: Price diff: ${price_diff:.4f}, Position size: {self.current_position['size']:.4f}")
-            print(f"P&L Debug: Raw P&L: ${pnl_dollar:.2f}")
-
-            # Update balance
-            self.current_balance += pnl_dollar
-
-            # Record trade
-            trade = {
-                'entry_time': self.current_position['entry_time'],
-                'entry_idx': self.current_position['entry_idx'],
-                'exit_time': datetime.now(),
-                'exit_idx': self.iteration,
-                'direction': self.current_position['direction'],
-                'entry_price': self.current_position['entry_price'],
-                'exit_price': current_price,
-                'size': self.current_position['size'],
-                'mss': self.current_position['mss'],
-                'bos': self.current_position['bos'],
-                'pnl_pct': pnl_pct,
-                'fvg': self.current_position['fvg'],
-                'pnl_dollar': pnl_dollar,
-                'reason': reason,
-                'exit_reason': reason,
-                'symbol': self.current_position['symbol']
-            }
-            self.trades.append(trade)
-            print(f"Position closed: {pnl_pct:.4f} ({pnl_dollar:.2f}) - {reason}")
-
-            telegram_text = ""
-            telegram_text += "===== Position Closed =====\n"
-            telegram_text += f"Direction: {self.current_position['direction']}\n"
-            telegram_text += f"Exit price: ${current_price:.4f}\n"
-            telegram_text += f"Total time in trade: {trade['exit_time'] - trade['entry_time']}\n"
-            telegram_text += f"P&L: ${pnl_dollar:.2f}\n"
-            telegram_text += f"Total trades taken: {len(self.trades)}\n"
-            telegram_text += f"Current balance: ${self.current_balance:.2f}\n"
-
-            send_telegram_message(telegram_text)
-
-            # Reset position
-            self.current_position = None
-            self.last_position_close_time = datetime.now()
-
-
-        except Exception as e:
-            print(f"Error closing position: {e}")
-
-
     async def handle_candle_data(self, candle):
-
         if not self.working_candle:
             self.working_candle = candle
         elif candle['T'] == self.working_candle['T']:
@@ -284,21 +187,31 @@ class LiveTrader(BaseTrader):
                 self.htf_data = self.htf_data.iloc[-self.htf_lookback:].reset_index(drop=True)
 
             self.working_candle = None
-            self.single_iteration(ltf_data=self.ltf_data, htf_data=self.htf_data, current_candle=candle,
-                                  current_price=candle['open'], current_time=datetime.now(), telegram=True)
+            self.process_new_candle(ltf_data=self.ltf_data, htf_data=self.htf_data, timestamp=datetime.now(), telegram=True)
 
 
-    async def handle_price_data(self, price_data):
-        pass
+    def check_position_opened(self, current_price, last_price):
+        sorted_setups = sorted(
+            self.strategy.active_setups,
+            key = lambda setup: setup['fvg']['top'],
+            reverse=True,
+        )
+
+        for setup in sorted_setups:
+            fvg_midpoint = (setup['fvg']['top'] + setup['fvg']['bottom']) / 2
+            if ((current_price >= fvg_midpoint >= last_price)
+                or (current_price <= fvg_midpoint <= last_price)):
+                return setup
 
 
-    async def route_message(self, message):
-        if message['channel'] == 'candle':
-            await self.handle_candle_data(message['data'])
-        elif message['channel'] == 'l2Book':
-            price = message['data']['levels'][0][-1]['px']
-            await self.handle_price_data(price)
-
+    async def handle_price_data(self, current_price, last_price):
+        if not self.current_position:
+            position = self.check_position_opened(current_price, last_price)
+            if position:
+                self.handle_position_open(position, datetime.now(), telegram=True)
+        else:
+            if self.check_position_closed(current_price):
+                self.handle_position_close(current_price, datetime.now(), telegram=False)
 
 
     async def run_paper_trading(self, duration_minutes=None):
@@ -346,11 +259,16 @@ class LiveTrader(BaseTrader):
                     'close': current_candle[0][4],
                 }
 
+                self.last_price = self.current_price
+                self.current_price = dex.fetch_ticker(self.symbol + '/USDC:USDC')['last']
+
                 if self.last_position_close_time:
                     if datetime.now() - self.last_position_close_time > timedelta(minutes=5):
                         continue
 
                 await self.handle_candle_data(current_candle)
+                await self.handle_price_data(current_price=self.current_price, last_price=self.last_price)
+
 
             except Exception as e:
                 print(f"Unexpected error, attempting to continue in 60 seconds ({e})")
@@ -359,7 +277,7 @@ class LiveTrader(BaseTrader):
 
         if self.current_position:
             final_price = self.ltf_data['close'].iloc[-1]
-            self._close_live_position(final_price, "Finished trading")
+            self.handle_position_close(final_price)
 
         self.create_and_send_images()
 

@@ -10,11 +10,12 @@ import os
 from helpers.hyperliquid_client import HyperliquidClient
 import matplotlib.pyplot as plt
 from base_trader import BaseTrader
+from datetime import datetime
 
 
 class BacktestTrader(BaseTrader):
     def __init__(self, symbol, initial_balance=10_000):
-        super().__init__(symbol, self._open_position, self._close_position, initial_balance)
+        super().__init__(symbol, initial_balance)
 
         self.plot_indices = np.array([])
         self.plot_opens = np.array([])
@@ -69,70 +70,42 @@ class BacktestTrader(BaseTrader):
             self.plot_indices = np.append(self.plot_indices, self.iteration)
             self.plot_opens = np.append(self.plot_opens, current_open)
 
-            self.single_iteration(current_data, current_htf_data, current_data.iloc[-1], current_data['close'].iloc[-1], current_time)
+            if (not self.last_position_close_time
+                or current_time - self.last_position_close_time > pd.Timedelta(minutes=self.trade_cooldown)):
+                self.handle_positions(current_data['close'].iloc[-1], current_data['high'].iloc[-1], current_data['low'].iloc[-1], current_time)
+
+            self.process_new_candle(current_data, current_htf_data, current_time)
 
         # Close any remaining position
         if self.current_position:
             final_price = data['close'].iloc[-1]
-            self._close_position(final_price, data.index[-1])
+            self.handle_position_close(final_price, datetime.fromtimestamp(data.index[-1]))
 
         print(f"Real data backtest completed. Total trades: {len(self.trades)}")
         return self.trades
 
 
-    def _open_position(self, setup: Dict, current_price: float, timestamp):
-        position = self.create_open_order(setup, current_price, timestamp)
-        self.current_position = position
-
-
-    def _close_position(self, current_price: float, timestamp):
-        """Close current position"""
+    def handle_positions(self, current_price, current_high, current_low, current_time):
         if not self.current_position:
-            return
-        try:
-            # Always use 'Stop Loss Hit' as the reason
-            reason = "Stop Loss Hit"
-            # Calculate P&L
-            if self.current_position['direction'] == 'long':
-                pnl_pct = (current_price - self.current_position['entry_price']) / self.current_position['entry_price']
-            else:
-                pnl_pct = (self.current_position['entry_price'] - current_price) / self.current_position['entry_price']
-            # Calculate dollar P&L - FIXED: Use position size × price difference
-            price_diff = abs(current_price - self.current_position['entry_price'])
-            pnl_dollar = self.current_position['size'] * price_diff
-            # Apply direction
-            if self.current_position['direction'] == 'long':
-                pnl_dollar = pnl_dollar if current_price > self.current_position['entry_price'] else -pnl_dollar
-            else:
-                pnl_dollar = pnl_dollar if current_price < self.current_position['entry_price'] else -pnl_dollar
-            # Debug P&L calculation
-            print(f"P&L Debug: Entry: ${self.current_position['entry_price']:.4f}, Exit: ${current_price:.4f}")
-            print(f"P&L Debug: Price diff: ${price_diff:.4f}, Position size: {self.current_position['size']:.4f}")
-            print(f"P&L Debug: Raw P&L: ${pnl_dollar:.2f}")
-            # Update balance
-            self.current_balance += pnl_dollar
-            # Record trade
-            trade = {
-                'entry_time': self.current_position['entry_time'],
-                'exit_time': timestamp,
-                'direction': self.current_position['direction'],
-                'entry_price': self.current_position['entry_price'],
-                'entry_idx': self.current_position['entry_idx'],
-                'exit_price': current_price,
-                'exit_idx': self.iteration,
-                'size': self.current_position['size'],
-                'pnl_pct': pnl_pct,
-                'fvg': self.current_position['fvg'],
-                'bos': self.current_position['bos'],
-                'mss': self.current_position['mss'],
-                'pnl_dollar': pnl_dollar,
-                'reason': reason,
-                'exit_reason': reason,
-                'symbol': self.current_position['symbol']
-            }
-            self.trades.append(trade)
-            print(f"Position closed: {pnl_pct:.4f} ({pnl_dollar:.2f}) - {reason}")
-            # Reset position
-            self.current_position = None
-        except Exception as e:
-            print(f"Error closing position: {e}")
+            position = self.check_position_opened(current_high, current_low)
+            if position:
+                self.handle_position_open(position, current_time)
+                if self.check_position_closed(current_price):
+                    self.handle_position_close(current_price, current_time)
+        else:
+            if self.check_position_closed(current_price):
+                self.handle_position_close(current_price, current_time)
+
+
+    def check_position_opened(self, current_high, current_low):
+        sorted_setups = sorted(
+            self.strategy.active_setups,
+            key = lambda setup: setup['fvg']['top'],
+            reverse=True,
+        )
+
+        for setup in sorted_setups:
+            fvg_midpoint = (setup['fvg']['top'] + setup['fvg']['bottom']) / 2
+            if current_high >= fvg_midpoint >= current_low:
+                return setup
+        return None

@@ -3,13 +3,12 @@ from typing import Dict
 from trading_logic.trading_strategy import FVGStrategy
 from trading_logic.structure_analysis import StructureAnalyzer
 import numpy as np
+from helpers.telegram_setup import send_telegram_message
 
 
 class BaseTrader:
-    def __init__(self, symbol, _open_position, _close_position, balance):
+    def __init__(self, symbol, balance):
         self.symbol = symbol
-        self._open_position = _open_position
-        self._close_position = _close_position
         self.strategy = FVGStrategy()
         self.analyzer = StructureAnalyzer()
         self.current_position = None
@@ -22,135 +21,130 @@ class BaseTrader:
         self.trades = []
         self.current_position = None
         self.current_balance = balance
+        self.last_position_close_time = None
 
-    def single_iteration(self, ltf_data, htf_data, current_candle, current_price, current_time, telegram=False):
-        current_low = current_candle['low']
-        current_high = current_candle['high']
-        print(f"Running iteration: time {current_time}, balance: ${self.current_balance:.2f}")
 
+    def process_new_candle(self, ltf_data, htf_data, timestamp, telegram=False):
+        print(f"Running iteration: time {timestamp}, balance: ${self.current_balance:.2f}")
         if self.current_position:
-            stop_loss = self.current_position['stop_loss']
-            direction = self.current_position['direction']
-
-            # Update trailing stop BEFORE checking stop loss
             self.strategy.update_trailing_stop(df=ltf_data, position=self.current_position, telegram=telegram)
+            pass
 
-            # Check if stop loss is hit
-            if direction == 'long' and current_low <= stop_loss:
-                self._close_position(stop_loss, current_time)
-                self.last_close = current_time
-            elif direction == 'short' and current_high >= stop_loss:
-                self._close_position(stop_loss, current_time)
-                self.last_close = current_time
-
-        # Check for new entry if no position
-        else:
-            self.strategy.check_entry_conditions(ltf_data, htf_data) # Add potential trades with countdowns
-            self.execute_valid_orders(current_price, current_time)
-
-        self.strategy.update_trade_setups()
+        self.strategy.check_entry_conditions(ltf_data, htf_data)
+        self.strategy.update_active_setups(ltf_data)
 
 
-    def execute_valid_orders(self, current_price, current_time):
-        best_setup = None
-        max_size = 0
-
-        for setup in self.strategy.trade_setups:
-            if self.analyzer.check_fvg_touch(current_price, setup["fvg"]):
-                size = abs(setup["fvg"]["top"] - setup["fvg"]["bottom"])
-                if size > max_size:
-                    best_setup = setup
-                    max_size = size
-
-        if best_setup:
-            best_setup["entry_price"] = current_price
-            self._open_position(best_setup, current_price, current_time)
-
-
-    def create_open_order(self, setup: Dict, current_price: float, timestamp):
-        """Open a new position"""
-
-        # Calculate position size
-        risk_amount = abs(setup['entry_price'] - setup['stop_loss'])
-        min_stop_distance = setup['entry_price'] * 0.0015
-        if risk_amount < min_stop_distance:
+    def create_open_order(self, setup, timestamp):
+        risk_amount = 150
+        entry_price = (setup['fvg']['top'] + setup['fvg']['bottom']) / 2
+        stop_distance = abs(entry_price - setup['stop_loss'])
+        min_stop_distance = entry_price * 0.0015
+        if stop_distance < min_stop_distance:
             print("RISK AMOUNT ADJUSTED TO MIN STOP DISTANCE")
-            risk_amount = min_stop_distance
+            stop_distance = min_stop_distance
 
-        position_size, stop_loss = self._calculate_position_size(risk_amount, setup['entry_price'], setup, self.symbol)
+        if setup['direction'] == 'long':
+            stop_loss = entry_price - stop_distance
+        else:  # short
+            stop_loss = entry_price + stop_distance
 
-        # Calculate expected loss if stop is hit
-        final_risk_amount = abs(setup['entry_price'] - stop_loss)
-        expected_loss = position_size * final_risk_amount
+        quantity = risk_amount / stop_distance
 
         position = {
             'direction': setup['direction'],
-            'entry_price': setup['entry_price'],
+            'entry_price': entry_price,
             'stop_loss': stop_loss,
-            'take_profit': setup.get('take_profit'),
-            'size': position_size,
+            'quantity': quantity,
             'fvg': setup['fvg'],
-            'bos': setup['bos'],
-            'mss': setup['mss'],
+            'indicator': setup['indicator'],
+            'indicator_type': setup['indicator_type'],
             'entry_time': timestamp,
             'entry_idx': self.iteration,
-            'reason': setup['reason'],
-            'symbol': self.symbol,
         }
 
-        print(f"Position opened: {self.current_position}")
-        print(
-                f"Risk amount: ${risk_amount:.4f}, Position size: {position_size:.4f}, Expected loss if stopped: ${expected_loss:.2f}")
+        print(f" === Position opened ===")
+        print(f"Risk amount: ${risk_amount:.4f}, Quantity: {quantity:.4f}, Stop distance: ${stop_distance:.2f}")
 
         return position
 
 
-    def _calculate_position_size(self, risk_amount: float, entry_price: float, setup: Dict,
-                                 symbol: str = "SOL-USD") -> tuple:
-        """Calculate position size based on risk management rules with capital and leverage constraints"""
-        dollar_risk = 150  # $150 fixed risk
+    def check_position_closed(self, current_price):
+        if self.current_position['direction'] == 'long':
+            if current_price <= self.current_position['stop_loss']:
+                return True
+        elif self.current_position['direction'] == 'short':
+            if current_price >= self.current_position['stop_loss']:
+                return True
 
-        # Position size = Target Risk / Price Risk per Unit
-        # This guarantees we risk exactly $150
-        position_size = dollar_risk / risk_amount
-        # Calculate position value (size × entry price)
-        position_value = position_size * entry_price
+        return False
 
-        # Get leverage for this symbol
-        leverage = MAX_LEVERAGE[symbol]
 
-        # Capital constraints: $10,000 capital with leverage = max position value
-        max_position_value = 10000 * leverage  # Dynamic based on symbol leverage
+    def handle_position_open(self, setup, timestamp, telegram=False):
+        self.current_position = self.create_open_order(setup, timestamp)
 
-        # Check if position value exceeds maximum allowed
-        if position_value > max_position_value:
-            # First, try to double the stop loss distance to reduce position size
-            original_stop = setup['stop_loss']
-            direction = setup['direction']
+        telegram_text = ""
+        telegram_text += "===== New Position Opened =====\n"
+        telegram_text += f"Direction: {self.current_position['direction']}\n"
+        telegram_text += f"Entry price: ${self.current_position['entry_price']:.4f}\n"
+        telegram_text += f"Stop loss: ${self.current_position['stop_loss']:.4f}\n"
+        telegram_text += f"Position quantity: {self.current_position['quantity']:.4f}\n"
 
-            if direction == 'long':
-                # Double the distance from entry to stop (widen stop down)
-                new_stop_distance = (entry_price - original_stop) * 2
-                new_stop = entry_price - new_stop_distance
-            else:  # short
-                # Double the distance from entry to stop (widen stop up)
-                new_stop_distance = (original_stop - entry_price) * 2
-                new_stop = entry_price + new_stop_distance
+        if telegram:
+            send_telegram_message(telegram_text)
+        print(telegram_text)
 
-            # Recalculate position size with new stop
-            new_risk_amount = abs(entry_price - new_stop)
-            position_size = dollar_risk / new_risk_amount
-            position_value = position_size * entry_price
 
-            # Check if this fits within capital constraints
-            if position_value <= max_position_value:
-                print(f"Stop loss widened to fit capital constraints. New stop: ${new_stop:.4f} (was ${original_stop:.4f})")
-                return position_size, new_stop
-            else:
-                # If still too large, scale down position size as last resort
-                position_size = max_position_value / entry_price
-                actual_risk = position_size * new_risk_amount
-                print(f"Position size reduced due to capital constraints. Risk: ${actual_risk:.2f} instead of $150")
-                return position_size, new_stop
+    def handle_position_close(self, current_price, timestamp, telegram=False):
+        # Calculate dollar P&L
+        exit_price = self.current_position['stop_loss']
+        price_diff = abs(exit_price - self.current_position['entry_price'])
+        pnl_dollar = self.current_position['quantity'] * price_diff
 
-        return position_size, setup['stop_loss']
+        if self.current_position['direction'] == 'long' and exit_price < self.current_position['entry_price']:
+            pnl_dollar *= -1
+        elif self.current_position['direction'] == 'short' and exit_price > self.current_position['entry_price']:
+            pnl_dollar *= -1
+
+        pnl_dollar -= 40
+        # Debug P&L calculation
+        print(f"P&L Debug: Entry: ${self.current_position['entry_price']:.4f}, Exit: ${exit_price:.4f}")
+        print(f"P&L Debug: Price diff: ${price_diff:.4f}, Position size: {self.current_position['quantity']:.4f}")
+        print(f"P&L Debug: Raw P&L: ${pnl_dollar:.2f}")
+
+        # Update balance
+        self.current_balance += pnl_dollar
+
+        # Record trade
+        trade = {
+            'entry_time': self.current_position['entry_time'],
+            'entry_idx': self.current_position['entry_idx'],
+            'exit_time': timestamp,
+            'exit_idx': self.iteration,
+            'direction': self.current_position['direction'],
+            'entry_price': self.current_position['entry_price'],
+            'exit_price': exit_price,
+            'quantity': self.current_position['quantity'],
+            'indicator': self.current_position['indicator'],
+            'indicator_type': self.current_position['indicator_type'],
+            'fvg': self.current_position['fvg'],
+            'pnl_dollar': pnl_dollar,
+        }
+        self.trades.append(trade)
+        print(f"Position closed: {pnl_dollar:.2f}")
+
+        telegram_text = ""
+        telegram_text += "===== Position Closed =====\n"
+        telegram_text += f"Direction: {self.current_position['direction']}\n"
+        telegram_text += f"Exit price: ${trade['exit_price']:.4f}\n"
+        telegram_text += f"Total time in trade: {trade['exit_time'] - trade['entry_time']}\n"
+        telegram_text += f"P&L: ${pnl_dollar:.2f}\n"
+        telegram_text += f"Total trades taken: {len(self.trades)}\n"
+        telegram_text += f"Current balance: ${self.current_balance:.2f}\n"
+
+        if telegram:
+            send_telegram_message(telegram_text)
+        print(telegram_text)
+
+        # Reset position
+        self.current_position = None
+        self.last_position_close_time = timestamp

@@ -4,8 +4,8 @@ from typing import List, Tuple, Dict, Optional
 
 
 class StructureAnalyzer:
-    def __init__(self):
-        pass
+    def __init__(self, min_fvg_strength = 0.0):
+        self.min_fvg_strength = min_fvg_strength
 
     def detect_swing_points(self, highs: np.array, lows: np.array):
         """Detect swing highs and lows in the price data
@@ -15,16 +15,22 @@ class StructureAnalyzer:
         swing_highs = np.full(shape=len(highs), fill_value=np.nan)
         swing_lows = np.full(shape=len(highs), fill_value=np.nan)
 
-        for i in range(1, len(highs) - 2):
+        for i in range(1, len(highs) - 4):
             if (highs[i] > highs[i - 1]
                     and highs[i] > highs[i - 2]
+                    and highs[i] > highs[i - 1]
                     and highs[i] > highs[i + 1]
-                    and highs[i] > highs[i + 2]):
+                    and highs[i] > highs[i + 2]
+                    and highs[i] > highs[i + 3]
+                    and highs[i] > highs[i + 4]):
                 swing_highs[i] = highs[i]
             if (lows[i] < lows[i - 1]
                     and lows[i] < lows[i - 2]
+                    and lows[i] < lows[i - 1]
                     and lows[i] < lows[i + 1]
-                    and lows[i] < lows[i + 2]):
+                    and lows[i] < lows[i + 2]
+                    and lows[i] < lows[i + 3]
+                    and lows[i] < lows[i + 4]):
                 swing_lows[i] = lows[i]
 
         return swing_highs, swing_lows
@@ -99,28 +105,28 @@ class StructureAnalyzer:
 
         highs = df['high'].to_numpy()
         lows = df['low'].to_numpy()
+        closes = df['close'].to_numpy()
         indices = df.index.to_numpy()
 
         for i in range(2, len(highs)):
             # Bullish FVG: gap between candle 1's high and candle 3's low
             c1_high = highs[i - 2]
-            c2_low = lows[i - 1]
             c3_low = lows[i]
 
             if c3_low > c1_high:
                 fvg = {
                     'type': 'bullish',
                     'start_idx': indices[i - 1],
-                    'top': c2_low,
+                    'top': c3_low,
                     'bottom': c1_high,
-                    'strength': c2_low - c1_high,
+                    'strength': c3_low - c1_high,
                     'filled': False
                 }
-                fvgs.append(fvg)
+                if fvg['strength'] >= closes[i] * self.min_fvg_strength:
+                    fvgs.append(fvg)
 
             # Bearish FVG: gap between candle 1's low and candle 3's high
             c1_low = lows[i - 2]
-            c2_high = highs[i - 1]
             c3_high = highs[i]
 
             if c3_high < c1_low:
@@ -128,11 +134,12 @@ class StructureAnalyzer:
                     'type': 'bearish',
                     'start_idx': indices[i - 1],
                     'top': c1_low,
-                    'bottom': c2_high,
-                    'strength': c1_low - c2_high,
+                    'bottom': c3_high,
+                    'strength': c1_low - c3_high,
                     'filled': False
                 }
-                fvgs.append(fvg)
+                if fvg['strength'] >= closes[i] * self.min_fvg_strength:
+                    fvgs.append(fvg)
 
         return fvgs
 
