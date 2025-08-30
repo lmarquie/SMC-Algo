@@ -24,9 +24,6 @@ class LiveTrader(BaseTrader):
 
         self.ssl_context = ssl.create_default_context(cafile=certifi.where())
 
-        self.ltf_lookback = 100
-        self.htf_lookback = 50
-
         self.working_candle = None
         self.full_data = pd.DataFrame()
         self.ltf_data = pd.DataFrame()
@@ -211,7 +208,7 @@ class LiveTrader(BaseTrader):
                 self.handle_position_open(position, datetime.now(), telegram=True)
         else:
             if self.check_position_closed(current_price):
-                self.handle_position_close(current_price, datetime.now(), telegram=False)
+                self.handle_position_close(current_price, datetime.now(), telegram=True)
 
 
     async def run_paper_trading(self, duration_minutes=None):
@@ -277,7 +274,7 @@ class LiveTrader(BaseTrader):
 
         if self.current_position:
             final_price = self.ltf_data['close'].iloc[-1]
-            self.handle_position_close(final_price)
+            self.handle_position_close(final_price, datetime.now(), telegram=True)
 
         self.create_and_send_images()
 

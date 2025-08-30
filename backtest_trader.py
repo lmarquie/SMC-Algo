@@ -27,9 +27,6 @@ class BacktestTrader(BaseTrader):
         self.long_count = 0
         self.short_count = 0
 
-        self.htf_lookback = 50
-        self.ltf_lookback = 100
-
 
     async def run_backtest(self, data):
         """Run backtest on real market data"""
@@ -89,6 +86,7 @@ class BacktestTrader(BaseTrader):
         if not self.current_position:
             position = self.check_position_opened(current_high, current_low)
             if position:
+                print("POSITION FOUND")
                 self.handle_position_open(position, current_time)
                 if self.check_position_closed(current_price):
                     self.handle_position_close(current_price, current_time)

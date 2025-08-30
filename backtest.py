@@ -172,6 +172,6 @@ async def run_real_data_backtest(symbol, method):
 
 
 SYMBOL = "SOL"
-METHOD = "binance"
+METHOD = "hyperliquid"
 if __name__ == "__main__":
     asyncio.run(run_real_data_backtest(SYMBOL, METHOD))

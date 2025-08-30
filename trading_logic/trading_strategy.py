@@ -33,12 +33,6 @@ class FVGStrategy:
         for setup in self.active_setups:
             if df['T'].iloc[-1] - setup['pitch_time'] > timedelta(minutes=self.max_entry_indicator_dist):
                 self.active_setups.remove(setup)
-            elif setup['direction'] == 'long':
-                if df['low'].iloc[-1] <= setup['fvg']['bottom']:
-                    self.active_setups.remove(setup)
-            elif setup['direction'] == 'short':
-                if df['high'].iloc[-1] >= setup['fvg']['top']:
-                    self.active_setups.remove(setup)
 
 
     def update_fvgs(self, df: pd.DataFrame) -> List[Dict]:
@@ -50,24 +44,24 @@ class FVGStrategy:
         new_fvgs = [fvg for fvg in recent_fvgs if not fvg['start_idx'] in self.existing_fvg_idxs]
         self.fvg_count += len(new_fvgs)
         self.existing_fvg_idxs += [fvg['start_idx'] for fvg in new_fvgs]
-        current_price = df['close'].iloc[-1]
+        current_low = df['low'].iloc[-1]
+        current_high = df['high'].iloc[-1]
 
         # Filter out old FVGs and mark filled ones
         active_fvgs = []
-        for fvg in self.active_fvgs + recent_fvgs:
-            if current_idx - fvg['start_idx'] <= self.fvg_lookback and current_idx - fvg['start_idx'] > 2:
-                if not fvg['filled']:
-                    if fvg['type'] == 'bullish':
-                        # FVG is filled if price goes below the bottom
-                        if current_price < fvg['bottom']:
-                            fvg['filled'] = True
-                    else:  # bearish
-                        # FVG is filled if price goes above the top
-                        if current_price > fvg['top']:
-                            fvg['filled'] = True
+        for fvg in self.active_fvgs + new_fvgs:
+            if not fvg['filled']:
+                if fvg['type'] == 'bullish':
+                    # FVG is filled if price goes below the bottom
+                    if current_low < fvg['bottom']:
+                        fvg['filled'] = True
+                else:  # bearish
+                    # FVG is filled if price goes above the top
+                    if current_high > fvg['top']:
+                        fvg['filled'] = True
 
-                if not fvg['filled']:
-                    active_fvgs.append(fvg)
+            if not fvg['filled']:
+                active_fvgs.append(fvg)
 
         self.active_fvgs = active_fvgs
         return active_fvgs

@@ -23,6 +23,9 @@ class BaseTrader:
         self.current_balance = balance
         self.last_position_close_time = None
 
+        self.htf_lookback = 24
+        self.ltf_lookback = 100
+
 
     def process_new_candle(self, ltf_data, htf_data, timestamp, telegram=False):
         print(f"Running iteration: time {timestamp}, balance: ${self.current_balance:.2f}")
@@ -36,9 +39,11 @@ class BaseTrader:
 
     def create_open_order(self, setup, timestamp):
         risk_amount = 150
+        min_dist_percent = 0
+
         entry_price = (setup['fvg']['top'] + setup['fvg']['bottom']) / 2
         stop_distance = abs(entry_price - setup['stop_loss'])
-        min_stop_distance = entry_price * 0.0015
+        min_stop_distance = entry_price * min_dist_percent
         if stop_distance < min_stop_distance:
             print("RISK AMOUNT ADJUSTED TO MIN STOP DISTANCE")
             stop_distance = min_stop_distance
@@ -80,6 +85,7 @@ class BaseTrader:
 
 
     def handle_position_open(self, setup, timestamp, telegram=False):
+        print("OPEN ORDER BEING CALLED")
         self.current_position = self.create_open_order(setup, timestamp)
 
         telegram_text = ""
@@ -88,10 +94,12 @@ class BaseTrader:
         telegram_text += f"Entry price: ${self.current_position['entry_price']:.4f}\n"
         telegram_text += f"Stop loss: ${self.current_position['stop_loss']:.4f}\n"
         telegram_text += f"Position quantity: {self.current_position['quantity']:.4f}\n"
+        telegram_text += f"Full exposure: ${(self.current_position['entry_price'] * self.current_position['quantity']):.2f}\n"
 
         if telegram:
             send_telegram_message(telegram_text)
         print(telegram_text)
+        self.strategy.active_setups = []
 
 
     def handle_position_close(self, current_price, timestamp, telegram=False):
