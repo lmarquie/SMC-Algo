@@ -187,7 +187,7 @@ class LiveTrader(BaseTrader):
             self.process_new_candle(ltf_data=self.ltf_data, htf_data=self.htf_data, timestamp=datetime.now(), telegram=True)
 
 
-    def check_position_opened(self, current_price, last_price):
+    def check_position_opened(self, current_candle):
         sorted_setups = sorted(
             self.strategy.active_setups,
             key = lambda setup: setup['fvg']['top'],
@@ -196,14 +196,13 @@ class LiveTrader(BaseTrader):
 
         for setup in sorted_setups:
             fvg_midpoint = (setup['fvg']['top'] + setup['fvg']['bottom']) / 2
-            if ((current_price >= fvg_midpoint >= last_price)
-                or (current_price <= fvg_midpoint <= last_price)):
+            if current_candle['high'] >= fvg_midpoint >= current_candle['low']:
                 return setup
 
 
-    async def handle_price_data(self, current_price, last_price):
+    async def handle_price_data(self, current_candle, current_price, last_price):
         if not self.current_position:
-            position = self.check_position_opened(current_price, last_price)
+            position = self.check_position_opened(current_candle)
             if position:
                 self.handle_position_open(position, datetime.now(), telegram=True)
         else:
@@ -264,7 +263,7 @@ class LiveTrader(BaseTrader):
                         continue
 
                 await self.handle_candle_data(current_candle)
-                await self.handle_price_data(current_price=self.current_price, last_price=self.last_price)
+                await self.handle_price_data(current_candle=current_candle, current_price=self.current_price, last_price=self.last_price)
 
 
             except Exception as e:
