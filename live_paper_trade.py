@@ -12,15 +12,16 @@ import matplotlib.pyplot as plt
 import os
 import shutil
 import ccxt
+import traceback
 
 class LiveTrader(BaseTrader):
     def __init__(self, symbol):
         super().__init__(symbol, 10_000)
 
-        self.client = HyperliquidClient(
-            HYPERLIQUID_API_KEY,
-            HYPERLIQUID_SUBACCOUNT,
-        )
+        self.dex = ccxt.hyperliquid({
+            "walletAddress": HYPERLIQUID_ACCOUNT_ADDRESS,
+            "privateKey": HYPERLIQUID_API_KEY,
+        })
 
         self.ssl_context = ssl.create_default_context(cafile=certifi.where())
 
@@ -125,69 +126,56 @@ class LiveTrader(BaseTrader):
 
     async def fetch_initial_data(self):
         try:
-            print(f"{datetime.now()}, balance {self.current_balance}...")
+            ltf_data = self.dex.fetch_ohlcv(self.symbol + '/USDC:USDC', timeframe='1m', limit=self.ltf_lookback)
+            htf_data = self.dex.fetch_ohlcv(self.symbol + '/USDC:USDC', timeframe='15m', limit=self.ltf_lookback)
 
-            # Fetch LTF data (1m) - increase to 1000 candles
-            ltf_data = await self.client.get_ohlcv(
-                symbol=self.symbol,
-                timeframe=TIMEFRAME,
-                limit=self.ltf_lookback,
-            )
+            ltf_list = []
+            htf_list = []
 
-            ltf_data = ltf_data[["open", "high", "low", "close", "T"]]
-            ltf_data['T'] = pd.to_datetime(ltf_data['T'], unit='ms')
-            ltf_data = ltf_data.reset_index(drop=True)
+            for index in range(len(ltf_data) - self.ltf_lookback - 1, len(ltf_data) - 1):
+                ltf_list.append({
+                    "T": datetime.fromtimestamp(ltf_data[index][0] / 1000),
+                    "open": ltf_data[index][1],
+                    "high": ltf_data[index][2],
+                    "low": ltf_data[index][3],
+                    "close": ltf_data[index][4],
+                })
+            for index in range(len(htf_data) - self.htf_lookback - 1, len(htf_data) - 1):
+                htf_list.append({
+                    "T": datetime.fromtimestamp(htf_data[index][0] / 1000),
+                    "open": htf_data[index][1],
+                    "high": htf_data[index][2],
+                    "low": htf_data[index][3],
+                    "close": htf_data[index][4],
+                })
 
-            # Fetch HTF data (15m) - reduced to 300 candles
-            htf_data = await self.client.get_ohlcv(
-                symbol=self.symbol,
-                timeframe=HTF_TIMEFRAME,
-                limit=self.htf_lookback,
-            )
+            ltf_df = pd.DataFrame(ltf_list)
+            htf_df = pd.DataFrame(htf_list)
 
-            htf_data = htf_data[["open", "high", "low", "close", "T"]]
-            htf_data['T'] = pd.to_datetime(htf_data['T'], unit='ms')
-            htf_data = htf_data.reset_index(drop=True)
-
-
-            if ltf_data.empty or htf_data.empty:
-                print(f"Failed to fetch market data for {self.symbol}")
-                return None, None, None
-
-            return ltf_data, htf_data
+            return ltf_df, htf_df
 
         except Exception as e:
             print(f"Error fetching live data for {self.symbol}: {e}")
             return None, None, None
 
 
-    async def handle_candle_data(self, candle):
-        if not self.working_candle:
-            self.working_candle = candle
-        elif candle['T'] == self.working_candle['T']:
-            self.working_candle['high'] = candle['high']
-            self.working_candle['low'] = candle['low']
-            self.working_candle['close'] = candle['close']
-        else:
-            print("Adding ltf candle")
-            self.ltf_data = pd.concat([self.ltf_data, pd.DataFrame([self.working_candle])], ignore_index=True)
+    async def handle_candle_data(self, ltf_candle, htf_candle):
+        last_ltf_time = self.ltf_data['T'].iloc[-1]
+        last_htf_time = self.htf_data['T'].iloc[-1]
+
+        if htf_candle['T'] > last_htf_time:
+            self.htf_data = pd.concat([self.htf_data, pd.DataFrame([htf_candle])], ignore_index=True)
+            self.htf_data = self.htf_data.iloc[-self.htf_lookback:].reset_index(drop=True)
+        if ltf_candle['T'] > last_ltf_time:
+            self.ltf_data = pd.concat([self.ltf_data, pd.DataFrame([ltf_candle])], ignore_index=True)
             self.ltf_data = self.ltf_data.iloc[-self.ltf_lookback:].reset_index(drop=True)
-
-            self.full_data = pd.concat([self.full_data, pd.DataFrame([self.working_candle])], ignore_index=True)
-            self.plot_times.append(self.working_candle['T'])
-            self.plot_opens.append(self.working_candle['open'])
-            self.iteration = len(self.full_data) - 1
-
-            if self.working_candle['T'] >= self.htf_data['T'].iloc[-1] + timedelta(minutes=HTF_TIMEFRAME_INT):
-                print("Adding htf candle")
-                self.htf_data = pd.concat([self.htf_data, pd.DataFrame([self.working_candle])], ignore_index=True)
-                self.htf_data = self.htf_data.iloc[-self.htf_lookback:].reset_index(drop=True)
-
-            self.working_candle = None
-            self.process_new_candle(ltf_data=self.ltf_data, htf_data=self.htf_data, timestamp=datetime.now(), telegram=True)
+            self.process_new_candle(ltf_data=self.ltf_data, htf_data=self.htf_data, timestamp=datetime.now(),
+                                    telegram=True)
 
 
-    def check_position_opened(self, current_candle):
+    def check_position_opened(self, current_high, current_low):
+        print(f"current high: {current_high}, current low: {current_low}")
+
         sorted_setups = sorted(
             self.strategy.active_setups,
             key = lambda setup: setup['fvg']['top'],
@@ -196,13 +184,13 @@ class LiveTrader(BaseTrader):
 
         for setup in sorted_setups:
             fvg_midpoint = (setup['fvg']['top'] + setup['fvg']['bottom']) / 2
-            if current_candle['high'] >= fvg_midpoint >= current_candle['low']:
+            if current_high >= fvg_midpoint >= current_low:
                 return setup
 
 
-    async def handle_price_data(self, current_candle, current_price, last_price):
+    async def handle_price_data(self, current_price, current_high, current_low):
         if not self.current_position:
-            position = self.check_position_opened(current_candle)
+            position = self.check_position_opened(current_high, current_low)
             if position:
                 self.handle_position_open(position, datetime.now(), telegram=True)
         else:
@@ -224,19 +212,14 @@ class LiveTrader(BaseTrader):
             print("Press Ctrl+C to stop the bot")
             end_time = None
 
-        print(f"Trading symbol: {self.symbol}")
         message += f"Trading symbol: {self.symbol}\n"
-        print(f"Risk per trade: ${RISK_PER_TRADE}")
         message += f"Risk per trade: {RISK_PER_TRADE}"
 
         send_telegram_message(message)
+        print(message)
         self.ltf_data, self.htf_data = await self.fetch_initial_data()
         self.full_data = self.ltf_data
 
-        dex = ccxt.hyperliquid({
-            "walletAddress": HYPERLIQUID_ACCOUNT_ADDRESS,
-            "privateKey": HYPERLIQUID_API_KEY,
-        })
 
         while True:
             if end_time and datetime.now() >= end_time:
@@ -246,28 +229,41 @@ class LiveTrader(BaseTrader):
                 break
 
             try:
-                current_candle = dex.fetch_ohlcv(self.symbol + '/USDC:USDC', timeframe='1m', limit=1)
-                current_candle = {
-                    'T': datetime.fromtimestamp(current_candle[0][0] / 1000),
-                    'open': current_candle[0][1],
-                    'high': current_candle[0][2],
-                    'low': current_candle[0][3],
-                    'close': current_candle[0][4],
+                ltf_candle = self.dex.fetch_ohlcv(self.symbol + '/USDC:USDC', timeframe='1m', limit=2)
+                htf_candle = self.dex.fetch_ohlcv(self.symbol + '/USDC:USDC', timeframe='15m', limit=2)
+
+                current_high = ltf_candle[-1][2]
+                current_low = ltf_candle[-1][3]
+
+                ltf_candle = {
+                    'T': datetime.fromtimestamp(ltf_candle[0][0] / 1000),
+                    'open': ltf_candle[0][1],
+                    'high': ltf_candle[0][2],
+                    'low': ltf_candle[0][3],
+                    'close': ltf_candle[0][4],
+                }
+                htf_candle = {
+                    'T': datetime.fromtimestamp(htf_candle[0][0] / 1000),
+                    'open': htf_candle[0][1],
+                    'high': htf_candle[0][2],
+                    'low': htf_candle[0][3],
+                    'close': htf_candle[0][4],
                 }
 
                 self.last_price = self.current_price
-                self.current_price = dex.fetch_ticker(self.symbol + '/USDC:USDC')['last']
+                self.current_price = self.dex.fetch_ticker(self.symbol + '/USDC:USDC')['last']
 
                 if self.last_position_close_time:
                     if datetime.now() - self.last_position_close_time > timedelta(minutes=5):
                         continue
 
-                await self.handle_candle_data(current_candle)
-                await self.handle_price_data(current_candle=current_candle, current_price=self.current_price, last_price=self.last_price)
+                await self.handle_candle_data(ltf_candle, htf_candle)
+                await self.handle_price_data(current_price=self.current_price, current_high=current_high, current_low=current_low)
 
 
             except Exception as e:
                 print(f"Unexpected error, attempting to continue in 60 seconds ({e})")
+                print(traceback.format_exc())
                 await asyncio.sleep(60)
 
 
