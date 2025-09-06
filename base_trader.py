@@ -39,20 +39,27 @@ class BaseTrader:
 
     def create_open_order(self, setup, timestamp):
         risk_amount = 150
-        min_dist_percent = 0
+        min_dist_percent = MIN_STOP_DISTANCE_COIN  # Use the config value
 
         entry_price = (setup['fvg']['top'] + setup['fvg']['bottom']) / 2
-        stop_distance = abs(entry_price - setup['stop_loss'])
+        original_stop_distance = abs(entry_price - setup['stop_loss'])
         min_stop_distance = entry_price * min_dist_percent
-        if stop_distance < min_stop_distance:
-            print("RISK AMOUNT ADJUSTED TO MIN STOP DISTANCE")
+        
+        # Enforce minimum stop distance
+        if original_stop_distance < min_stop_distance:
+            print(f"MINIMUM STOP DISTANCE ENFORCED: {original_stop_distance:.4f} → {min_stop_distance:.4f}")
             stop_distance = min_stop_distance
+            
+            # Recalculate stop loss based on new distance
+            if setup['direction'] == 'long':
+                stop_loss = entry_price - stop_distance
+            else:  # short
+                stop_loss = entry_price + stop_distance
+        else:
+            stop_distance = original_stop_distance
+            stop_loss = setup['stop_loss']
 
-        if setup['direction'] == 'long':
-            stop_loss = entry_price - stop_distance
-        else:  # short
-            stop_loss = entry_price + stop_distance
-
+        # Calculate quantity based on risk amount and stop distance
         quantity = risk_amount / stop_distance
 
         position = {
@@ -68,7 +75,10 @@ class BaseTrader:
         }
 
         print(f" === Position opened ===")
-        print(f"Risk amount: ${risk_amount:.4f}, Quantity: {quantity:.4f}, Stop distance: ${stop_distance:.2f}")
+        print(f"Risk amount: ${risk_amount:.4f}, Quantity: {quantity:.4f}, Stop distance: ${stop_distance:.4f}")
+        print(f"Stop loss: ${stop_loss:.4f}")
+        if stop_distance > original_stop_distance:
+            print(f"⚠️  Position size adjusted to maintain ${risk_amount} risk with minimum stop distance")
 
         return position
 
