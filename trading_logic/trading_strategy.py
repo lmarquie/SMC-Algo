@@ -29,6 +29,22 @@ class FVGStrategy:
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
 
+    def _enforce_minimum_stop_distance(self, entry_price: float, stop_loss: float, direction: str) -> float:
+        """
+        Enforce minimum stop distance as a percentage of the coin's value
+        Returns the adjusted stop loss that maintains minimum distance
+        """
+        min_distance = entry_price * MIN_STOP_DISTANCE_COIN
+        
+        if direction == 'long':
+            # For long positions, stop loss should be below entry price
+            max_stop_loss = entry_price - min_distance
+            return max(stop_loss, max_stop_loss)
+        else:  # short
+            # For short positions, stop loss should be above entry price
+            min_stop_loss = entry_price + min_distance
+            return min(stop_loss, min_stop_loss)
+
     def update_active_setups(self, df):
         for setup in self.active_setups:
             if df['T'].iloc[-1] - setup['pitch_time'] > timedelta(minutes=self.max_entry_indicator_dist):
@@ -114,7 +130,7 @@ class FVGStrategy:
         larger_trend = self.identify_larger_trend(htf_df)
 
         # Make trend confidence requirement stricter
-        if larger_trend['confidence'] < 0.50:
+        if larger_trend['confidence'] < 0.55:
             return None
 
         # Step 3: Look for reversal of the pullback
@@ -152,6 +168,9 @@ class FVGStrategy:
                         # Use the LOWER of the two stops (FVG-based or structure-based)
                         stop_loss = min(stop_loss, swing_stop)
 
+                    # Enforce minimum stop distance
+                    stop_loss = self._enforce_minimum_stop_distance(current_price, stop_loss, 'long')
+
                     self.active_setups.append({
                         'direction': 'long',
                         'stop_loss': stop_loss,
@@ -186,6 +205,9 @@ class FVGStrategy:
                         swing_stop = nearest_swing_high + STOP_LOSS_BUFFER
                         # Use the HIGHER of the two stops (FVG-based or structure-based)
                         stop_loss = max(stop_loss, swing_stop)
+
+                    # Enforce minimum stop distance
+                    stop_loss = self._enforce_minimum_stop_distance(current_price, stop_loss, 'short')
 
                     self.active_setups.append({
                         'direction': 'short',
@@ -370,6 +392,9 @@ class FVGStrategy:
 
                         # Only update if both sides confirm (2 before + 2 after)
                         if not before_low_crossed and not after_low_crossed:
+                            # Enforce minimum stop distance before updating
+                            new_stop = self._enforce_minimum_stop_distance(position['entry_price'], new_stop, 'long')
+                            
                             if position['stop_loss'] != new_stop:
                                 old_stop = position['stop_loss']
                                 position['stop_loss'] = new_stop
@@ -434,6 +459,9 @@ class FVGStrategy:
 
                         # Only update if both sides confirm (2 before + 2 after)
                         if not before_high_crossed and not after_high_crossed:
+                            # Enforce minimum stop distance before updating
+                            new_stop = self._enforce_minimum_stop_distance(position['entry_price'], new_stop, 'short')
+                            
                             if position['stop_loss'] != new_stop:
                                 position['stop_loss'] = new_stop
                                 position['last_stop_update_idx'] = swing_highs.index[-1]

@@ -4,7 +4,8 @@ from typing import List, Tuple, Dict, Optional
 
 
 class StructureAnalyzer:
-    def __init__(self, min_fvg_strength = 0.0):
+    def __init__(self, min_fvg_strength = 0.001):
+        # Minimum FVG size: 0.10% of coin value
         self.min_fvg_strength = min_fvg_strength
 
     def detect_swing_points(self, highs: np.array, lows: np.array):
