@@ -2,33 +2,6 @@ import requests
 from credentials import CHAT_ID, TOKEN
 import time
 import re
-import ssl
-import certifi
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-
-
-# Create a session with proper SSL configuration and retry logic
-def create_telegram_session():
-    session = requests.Session()
-
-    # Set up retry strategy
-    retry_strategy = Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504],
-    )
-
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-
-    return session
-
-
-# Create a global session instance
-telegram_session = create_telegram_session()
-
 
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -36,24 +9,8 @@ def send_telegram_message(message):
         'chat_id': CHAT_ID,
         'text': message
     }
-
-    try:
-        response = telegram_session.get(
-            url,
-            params=payload,
-            verify=certifi.where(),
-            timeout=30
-        )
-        return response.json()
-    except requests.exceptions.SSLError as e:
-        print(f"SSL Error sending Telegram message: {e}")
-        return {"ok": False, "error": f"SSL Error: {str(e)}"}
-    except requests.exceptions.RequestException as e:
-        print(f"Request Error sending Telegram message: {e}")
-        return {"ok": False, "error": f"Request Error: {str(e)}"}
-    except Exception as e:
-        print(f"Unexpected error sending Telegram message: {e}")
-        return {"ok": False, "error": f"Unexpected Error: {str(e)}"}
+    response = requests.get(url, params=payload)
+    return response.json()
 
 
 def is_stop_requested():
@@ -63,15 +20,9 @@ def is_stop_requested():
     """
     url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
     try:
-        resp = telegram_session.get(
-            url,
-            params={"limit": 100},
-            verify=certifi.where(),
-            timeout=10
-        )
+        resp = requests.get(url, params={"limit": 100}, timeout=10)
         data = resp.json()
-    except Exception as e:
-        print(f"Error checking stop request: {e}")
+    except Exception:
         return False
 
     if not isinstance(data, dict) or not data.get("ok"):
@@ -108,24 +59,15 @@ def send_telegram_image(filepath, caption=None, disable_notification=False):
         "caption": caption or "",
         "disable_notification": disable_notification,
     }
-
     try:
         with open(filepath, "rb") as f:
             files = {"photo": (filepath, f)}
-            resp = telegram_session.post(
-                url,
-                data=data,
-                files=files,
-                verify=certifi.where(),
-                timeout=30
-            )
+            resp = requests.post(url, data=data, files=files, timeout=30)
         return resp.json()
-    except requests.exceptions.SSLError as e:
-        print(f"SSL Error sending Telegram image: {e}")
-        return {"ok": False, "error": f"SSL Error: {str(e)}"}
-    except requests.exceptions.RequestException as e:
-        print(f"Request Error sending Telegram image: {e}")
-        return {"ok": False, "error": f"Request Error: {str(e)}"}
     except Exception as e:
-        print(f"Unexpected error sending Telegram image: {e}")
-        return {"ok": False, "error": f"Unexpected Error: {str(e)}"}
+        return {"ok": False, "error": str(e)}
+
+
+
+
+

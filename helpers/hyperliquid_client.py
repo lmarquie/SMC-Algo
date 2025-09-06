@@ -89,6 +89,9 @@ class HyperliquidClient:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
             return df.sort_index()
         except Exception as e:
+            print(f"🔴 FULL ERROR in get_ohlcv: {e}")
+            import traceback
+            traceback.print_exc()
             self.logger.error(f"Error fetching OHLCV data: {e}")
             return pd.DataFrame()
 
