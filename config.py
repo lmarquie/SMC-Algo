@@ -2,7 +2,11 @@
 HYPERLIQUID_SUBACCOUNT = "default"
 
 # Trading Configuration
-SYMBOLS = ["SOL"]
+SYMBOLS = [
+    "SOL", "ETH", "BTC", "AVAX",  # Your current ones
+    "DOGE", "ADA", "LINK", "LTC", # Major alts
+    "BNB", "XRP", "NEAR", "TON"   # Additional liquid coins
+]
 TIMEFRAME = "1m"
 TIMEFRAME_INT = 1
 HTF_TIMEFRAME = "15m"

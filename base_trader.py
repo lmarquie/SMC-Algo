@@ -94,12 +94,16 @@ class BaseTrader:
         return False
 
 
-    def handle_position_open(self, setup, timestamp, telegram=False):
+    def handle_position_open(self, setup, timestamp, telegram=False, symbol=None):
         print("OPEN ORDER BEING CALLED")
         self.current_position = self.create_open_order(setup, timestamp)
 
         telegram_text = ""
-        telegram_text += "===== New Position Opened =====\n"
+        if symbol:
+            telegram_text += f"===== New {symbol} Position Opened =====\n"
+        else:
+            telegram_text += "===== New Position Opened =====\n"
+        telegram_text += f"Symbol: {symbol if symbol else 'N/A'}\n"
         telegram_text += f"Direction: {self.current_position['direction']}\n"
         telegram_text += f"Entry price: ${self.current_position['entry_price']:.4f}\n"
         telegram_text += f"Stop loss: ${self.current_position['stop_loss']:.4f}\n"
@@ -112,7 +116,7 @@ class BaseTrader:
         self.strategy.active_setups = []
 
 
-    def handle_position_close(self, current_price, timestamp, telegram=False):
+    def handle_position_close(self, current_price, timestamp, telegram=False, symbol=None):
         # Calculate dollar P&L
         exit_price = self.current_position['stop_loss']
         price_diff = abs(exit_price - self.current_position['entry_price'])
@@ -151,7 +155,11 @@ class BaseTrader:
         print(f"Position closed: {pnl_dollar:.2f}")
 
         telegram_text = ""
-        telegram_text += "===== Position Closed =====\n"
+        if symbol:
+            telegram_text += f"===== {symbol} Position Closed =====\n"
+        else:
+            telegram_text += "===== Position Closed =====\n"
+        telegram_text += f"Symbol: {symbol if symbol else 'N/A'}\n"
         telegram_text += f"Direction: {self.current_position['direction']}\n"
         telegram_text += f"Exit price: ${trade['exit_price']:.4f}\n"
         telegram_text += f"Total time in trade: {trade['exit_time'] - trade['entry_time']}\n"
