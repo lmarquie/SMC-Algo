@@ -10,7 +10,7 @@ class BaseTrader:
     def __init__(self, symbol, balance):
         self.symbol = symbol
         self.strategy = FVGStrategy()
-        self.analyzer = StructureAnalyzer()
+        self.analyzer = StructureAnalyzer(min_fvg_strength=MIN_FVG_STRENGTH)
         self.current_position = None
         self.iteration = 0
 
@@ -31,7 +31,7 @@ class BaseTrader:
         print(f"Running iteration: time {timestamp}, balance: ${self.current_balance:.2f}")
         if self.current_position:
             self.strategy.update_trailing_stop(df=ltf_data, position=self.current_position, telegram=telegram)
-            pass
+            return
 
         self.strategy.check_entry_conditions(ltf_data, htf_data)
         self.strategy.update_active_setups(ltf_data)

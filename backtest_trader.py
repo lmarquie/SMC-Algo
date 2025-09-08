@@ -101,6 +101,7 @@ class BacktestTrader(BaseTrader):
             key = lambda setup: setup['fvg']['top'],
             reverse=True,
         )
+        sorted_setups = [setup for setup in sorted_setups if not setup['fvg']['filled']]
 
         for setup in sorted_setups:
             fvg_midpoint = (setup['fvg']['top'] + setup['fvg']['bottom']) / 2

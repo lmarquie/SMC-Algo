@@ -29,6 +29,7 @@ class FVGStrategy:
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
 
+
     def _enforce_minimum_stop_distance(self, entry_price: float, stop_loss: float, direction: str) -> float:
         """
         Enforce minimum stop distance as a percentage of the coin's value
@@ -44,6 +45,7 @@ class FVGStrategy:
             # For short positions, stop loss should be above entry price
             min_stop_loss = entry_price + min_distance
             return min(stop_loss, min_stop_loss)
+
 
     def update_active_setups(self, df):
         # Create a new list without expired setups to avoid modifying list while iterating
@@ -85,6 +87,7 @@ class FVGStrategy:
         self.active_fvgs = active_fvgs
         return active_fvgs
 
+
     def identify_larger_trend(self, htf_df: pd.DataFrame) -> Dict:
         """Identify the larger trend direction and strength"""
         if len(htf_df) < 20:
@@ -123,6 +126,7 @@ class FVGStrategy:
             'bullish_strength': bullish_strength,
             'bearish_strength': bearish_strength
         }
+
 
     def check_entry_conditions(self, df: pd.DataFrame, htf_df: pd.DataFrame) -> Optional[Dict]:
         """Check if entry conditions are met for the trend continuation strategy"""
@@ -230,12 +234,12 @@ class FVGStrategy:
                             'direction': 'short',
                             'stop_loss': stop_loss,
                             'fvg': fvg,
-                        'indicator': df.index[-1],
-                        'indicator_type': 'bos' if df_analyzed["bearish_bos"].iloc[-1] else 'mss',
-                        'pitch_time': df['T'].iloc[-1],
-                        'larger_trend': larger_trend['trend'],
-                        'trend_confidence': larger_trend['confidence'],
-                    })
+                            'indicator': df.index[-1],
+                            'indicator_type': 'bos' if df_analyzed["bearish_bos"].iloc[-1] else 'mss',
+                            'pitch_time': df['T'].iloc[-1],
+                            'larger_trend': larger_trend['trend'],
+                            'trend_confidence': larger_trend['confidence'],
+                        })
 
 
     def should_exit_position(self, df: pd.DataFrame, position: Dict) -> bool:
@@ -277,6 +281,7 @@ class FVGStrategy:
                 return True
 
         return False
+
 
     def update_position(self, position: Dict, current_price: float):
         """Update position with current market data"""
@@ -329,6 +334,7 @@ class FVGStrategy:
 
         # Return the lowest swing high above current price (closest to price)
         return valid_highs.min()
+
 
     def update_trailing_stop(self, df: pd.DataFrame, position: Dict, telegram=False) -> bool:
         """Update stop only on new swing structure, but only after R:R >= 1:1."""

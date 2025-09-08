@@ -1,6 +1,9 @@
 import json
 import pandas as pd
 from helpers.hyperliquid_client import HyperliquidClient
+import ccxt
+from datetime import datetime
+from credentials import HYPERLIQUID_ACCOUNT_ADDRESS, HYPERLIQUID_API_KEY
 
 async def fetch_binance_data(symbol):
     with open(f'recent_{symbol.lower()}.json', 'r') as f:
@@ -28,23 +31,24 @@ async def fetch_hyperliquid_data(symbol):
     # Fetch exactly 5000 candles
     target_candles = 5000
 
-    client = HyperliquidClient(api_key="0xa90b4285bc34a56a8b102b71d18bd2a82f7e7b464965e5d3a9e064f4eb7ad4df")
+    dex = ccxt.hyperliquid({
+        "walletAddress": HYPERLIQUID_ACCOUNT_ADDRESS,
+        "privateKey": HYPERLIQUID_API_KEY,
+    })
 
     # Fetch the most recent 5000 candles
-    df = await client.get_ohlcv(
-        f"{symbol}",
-        timeframe="1m",
-        limit=target_candles,
-    )
+    data = dex.fetch_ohlcv(symbol + '/USDC:USDC', timeframe='1m', limit=5000)
 
-    # Ensure we have exactly 5000 candles (or as many as available)
-    if len(df) > target_candles:
-        df = df.tail(target_candles)
+    data_list = []
 
-    df = df[["open", "high", "low", "close", "T"]]
-    df['T'] = pd.to_datetime(df['T'], unit='ms')
-    df = df.reset_index(drop=True)
+    for index in range(0, 5000):
+        data_list.append({
+            "T": datetime.fromtimestamp(data[index][0] / 1000),
+            "open": data[index][1],
+            "high": data[index][2],
+            "low": data[index][3],
+            "close": data[index][4],
+        })
 
-    print(f"✅ Successfully fetched {len(df)} real candles for {symbol}")
-    return df
+    return pd.DataFrame(data_list)
 
