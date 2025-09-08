@@ -4,7 +4,7 @@ from typing import List, Tuple, Dict, Optional
 
 
 class StructureAnalyzer:
-    def __init__(self, min_fvg_strength = 0.0001):
+    def __init__(self, min_fvg_strength):
         # Minimum FVG size: 0.10% of coin value
         self.min_fvg_strength = min_fvg_strength
 
@@ -112,9 +112,16 @@ class StructureAnalyzer:
         for i in range(2, len(highs)):
             # Bullish FVG: gap between candle 1's high and candle 3's low
             c1_high = highs[i - 2]
+            c2_high = highs[i - 1]
+            c3_high = highs[i]
+
+            c1_low = lows[i - 2]
+            c2_low = lows[i - 1]
             c3_low = lows[i]
 
-            if c3_low > c1_high:
+            if (c3_low > c1_high and
+                    c2_low > c1_low and
+                    c3_high > c2_high):
                 fvg = {
                     'type': 'bullish',
                     'start_idx': indices[i - 1],
@@ -127,10 +134,17 @@ class StructureAnalyzer:
                     fvgs.append(fvg)
 
             # Bearish FVG: gap between candle 1's low and candle 3's high
-            c1_low = lows[i - 2]
+            c1_high = highs[i - 2]
+            c2_high = highs[i - 1]
             c3_high = highs[i]
 
-            if c3_high < c1_low:
+            c1_low = lows[i - 2]
+            c2_low = lows[i - 1]
+            c3_low = lows[i]
+
+            if (c3_high < c1_low and
+                    c2_high < c1_high and
+                    c3_low < c2_low):
                 fvg = {
                     'type': 'bearish',
                     'start_idx': indices[i - 1],

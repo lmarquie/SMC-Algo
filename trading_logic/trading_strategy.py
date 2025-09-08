@@ -6,11 +6,12 @@ from config import *
 from datetime import datetime, timedelta
 from helpers.telegram_setup import send_telegram_message
 import math
+from config import MIN_FVG_STRENGTH
 
 
 class FVGStrategy:
     def __init__(self):
-        self.analyzer = StructureAnalyzer()
+        self.analyzer = StructureAnalyzer(min_fvg_strength=MIN_FVG_STRENGTH)
         self.active_fvgs = []
         self.active_setups = []
         self.last_analysis_time = None

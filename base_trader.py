@@ -1,7 +1,6 @@
 from config import *
 from typing import Dict
 from trading_logic.trading_strategy import FVGStrategy
-from trading_logic.structure_analysis import StructureAnalyzer
 import numpy as np
 from helpers.telegram_setup import send_telegram_message
 
@@ -10,7 +9,6 @@ class BaseTrader:
     def __init__(self, symbol, balance):
         self.symbol = symbol
         self.strategy = FVGStrategy()
-        self.analyzer = StructureAnalyzer(min_fvg_strength=MIN_FVG_STRENGTH)
         self.current_position = None
         self.iteration = 0
 
