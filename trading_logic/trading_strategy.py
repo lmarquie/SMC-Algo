@@ -46,9 +46,12 @@ class FVGStrategy:
             return min(stop_loss, min_stop_loss)
 
     def update_active_setups(self, df):
-        for setup in self.active_setups:
-            if df['T'].iloc[-1] - setup['pitch_time'] > timedelta(minutes=self.max_entry_indicator_dist):
-                self.active_setups.remove(setup)
+        # Create a new list without expired setups to avoid modifying list while iterating
+        current_time = df['T'].iloc[-1]
+        self.active_setups = [
+            setup for setup in self.active_setups 
+            if current_time - setup['pitch_time'] <= timedelta(minutes=self.max_entry_indicator_dist)
+        ]
 
 
     def update_fvgs(self, df: pd.DataFrame) -> List[Dict]:
@@ -159,28 +162,35 @@ class FVGStrategy:
                 )
 
                 if current_price > fvg["top"] and not has_bearish_reversal:
-                    stop_loss = fvg['bottom'] - STOP_LOSS_BUFFER
+                    # Check if setup already exists for this FVG
+                    fvg_already_has_setup = any(
+                        setup['fvg']['start_idx'] == fvg['start_idx'] and setup['direction'] == 'long'
+                        for setup in self.active_setups
+                    )
+                    
+                    if not fvg_already_has_setup:
+                        stop_loss = fvg['bottom'] - STOP_LOSS_BUFFER
 
-                    # Find nearest swing low for structure-based stop
-                    nearest_swing_low = self._find_nearest_swing_low(df_analyzed, current_price)
-                    if nearest_swing_low:
-                        swing_stop = nearest_swing_low - STOP_LOSS_BUFFER
-                        # Use the LOWER of the two stops (FVG-based or structure-based)
-                        stop_loss = min(stop_loss, swing_stop)
+                        # Find nearest swing low for structure-based stop
+                        nearest_swing_low = self._find_nearest_swing_low(df_analyzed, current_price)
+                        if nearest_swing_low:
+                            swing_stop = nearest_swing_low - STOP_LOSS_BUFFER
+                            # Use the LOWER of the two stops (FVG-based or structure-based)
+                            stop_loss = min(stop_loss, swing_stop)
 
-                    # Enforce minimum stop distance
-                    stop_loss = self._enforce_minimum_stop_distance(current_price, stop_loss, 'long')
+                        # Enforce minimum stop distance
+                        stop_loss = self._enforce_minimum_stop_distance(current_price, stop_loss, 'long')
 
-                    self.active_setups.append({
-                        'direction': 'long',
-                        'stop_loss': stop_loss,
-                        'fvg': fvg,
-                        'indicator': df.index[-1],
-                        'indicator_type': 'bos' if df_analyzed["bullish_bos"].iloc[-1] else 'mss',
-                        'pitch_time': df['T'].iloc[-1],
-                        'larger_trend': larger_trend['trend'],
-                        'trend_confidence': larger_trend['confidence'],
-                    })
+                        self.active_setups.append({
+                            'direction': 'long',
+                            'stop_loss': stop_loss,
+                            'fvg': fvg,
+                            'indicator': df.index[-1],
+                            'indicator_type': 'bos' if df_analyzed["bullish_bos"].iloc[-1] else 'mss',
+                            'pitch_time': df['T'].iloc[-1],
+                            'larger_trend': larger_trend['trend'],
+                            'trend_confidence': larger_trend['confidence'],
+                        })
 
 
     def _add_bearish_setups(self, df, active_fvgs, current_price, larger_trend):
@@ -197,22 +207,29 @@ class FVGStrategy:
                 )
 
                 if current_price < fvg["bottom"] and not has_bullish_reversal:
-                    stop_loss = fvg['top'] + STOP_LOSS_BUFFER
+                    # Check if setup already exists for this FVG
+                    fvg_already_has_setup = any(
+                        setup['fvg']['start_idx'] == fvg['start_idx'] and setup['direction'] == 'short'
+                        for setup in self.active_setups
+                    )
+                    
+                    if not fvg_already_has_setup:
+                        stop_loss = fvg['top'] + STOP_LOSS_BUFFER
 
-                    # Find nearest swing high for structure-based stop
-                    nearest_swing_high = self._find_nearest_swing_high(df_analyzed, current_price)
-                    if nearest_swing_high:
-                        swing_stop = nearest_swing_high + STOP_LOSS_BUFFER
-                        # Use the HIGHER of the two stops (FVG-based or structure-based)
-                        stop_loss = max(stop_loss, swing_stop)
+                        # Find nearest swing high for structure-based stop
+                        nearest_swing_high = self._find_nearest_swing_high(df_analyzed, current_price)
+                        if nearest_swing_high:
+                            swing_stop = nearest_swing_high + STOP_LOSS_BUFFER
+                            # Use the HIGHER of the two stops (FVG-based or structure-based)
+                            stop_loss = max(stop_loss, swing_stop)
 
-                    # Enforce minimum stop distance
-                    stop_loss = self._enforce_minimum_stop_distance(current_price, stop_loss, 'short')
+                        # Enforce minimum stop distance
+                        stop_loss = self._enforce_minimum_stop_distance(current_price, stop_loss, 'short')
 
-                    self.active_setups.append({
-                        'direction': 'short',
-                        'stop_loss': stop_loss,
-                        'fvg': fvg,
+                        self.active_setups.append({
+                            'direction': 'short',
+                            'stop_loss': stop_loss,
+                            'fvg': fvg,
                         'indicator': df.index[-1],
                         'indicator_type': 'bos' if df_analyzed["bearish_bos"].iloc[-1] else 'mss',
                         'pitch_time': df['T'].iloc[-1],
