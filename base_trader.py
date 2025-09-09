@@ -106,7 +106,14 @@ class BaseTrader:
         telegram_text += f"Entry price: ${self.current_position['entry_price']:.4f}\n"
         telegram_text += f"Stop loss: ${self.current_position['stop_loss']:.4f}\n"
         telegram_text += f"Position quantity: {self.current_position['quantity']:.4f}\n"
-        telegram_text += f"Full exposure: ${(self.current_position['entry_price'] * self.current_position['quantity']):.2f}\n"
+
+        full_exposure = self.current_position['entry_price'] * self.current_position['quantity']
+        margin_required = full_exposure / MAX_LEVERAGE[self.symbol]
+        total_fees = full_exposure * 0.00015
+
+        telegram_text += f"Full exposure: ${full_exposure:.2f}\n"
+        telegram_text += f"Margin required: ${margin_required:.2f}\n"
+        telegram_text += f"Total fees: ${total_fees:.2f}\n"
 
         if telegram:
             send_telegram_message(telegram_text)
