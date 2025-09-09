@@ -200,10 +200,10 @@ class LiveTrader(BaseTrader):
             position = self.check_position_opened(current_high, current_low)
             if position:
                 print("POSITION FOUND")
-                self.handle_position_open(position, datetime.now(), telegram=True)
+                self.handle_position_open(position, datetime.now(), telegram=True, symbol=self.symbol)
         else:
             if self.check_position_closed(current_price):
-                self.handle_position_close(current_price, datetime.now(), telegram=True)
+                self.handle_position_close(current_price, datetime.now(), telegram=True, symbol=self.symbol)
 
 
     async def run_paper_trading(self, duration_minutes=None):
