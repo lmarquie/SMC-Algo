@@ -7,3 +7,5 @@ hyperliquid-python-sdk
 polygon-api-client
 matplotlib
 ccxt
+python-telegram-bot
+telegram

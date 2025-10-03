@@ -7,25 +7,15 @@ import json
 import shutil
 import os
 
-from helpers.hyperliquid_client import HyperliquidClient
 import matplotlib.pyplot as plt
 from base_trader import BaseTrader
 from datetime import datetime
+from config import BACKTEST_RISK_PER_TRADE
 
 
 class BacktestTrader(BaseTrader):
     def __init__(self, symbol, initial_balance=10_000):
-        super().__init__(symbol, initial_balance)
-
-        self.plot_indices = np.array([])
-        self.plot_opens = np.array([])
-        self.open_times = np.array([])
-        self.open_values = np.array([])
-        self.close_times = np.array([])
-        self.close_values = np.array([])
-
-        self.long_count = 0
-        self.short_count = 0
+        super().__init__(symbol, initial_balance, risk_amount=BACKTEST_RISK_PER_TRADE, telegram=False)
 
 
     async def run_backtest(self, data):
@@ -59,52 +49,33 @@ class BacktestTrader(BaseTrader):
 
             # Get corresponding HTF data
             current_time = current_data['T'].iloc[-1]
-            current_open = current_data['open'].iloc[-1]
             htf_end_idx = htf_data.index.get_indexer([current_time], method='ffill')[0]
             current_htf_data = htf_data.iloc[max(0, htf_end_idx + 1 - self.htf_lookback):htf_end_idx + 1]
 
-            # Plotting data
-            self.plot_indices = np.append(self.plot_indices, self.iteration)
-            self.plot_opens = np.append(self.plot_opens, current_open)
+            self.process_new_candle(current_data, current_htf_data, current_time)
+            vol5 = current_data['volume'].iloc[-5:].sum()
+            vol10 = current_data['volume'].iloc[-10:].sum()
+            vol15 = current_data['volume'].iloc[-15:].sum()
 
             if (not self.last_position_close_time
                 or current_time - self.last_position_close_time > pd.Timedelta(minutes=self.trade_cooldown)):
-                self.handle_positions(current_data['close'].iloc[-1], current_data['high'].iloc[-1], current_data['low'].iloc[-1], current_time)
+                self.handle_positions(
+                    current_data, 
+                    current_price=current_data['close'].iloc[-1], 
+                    current_high=current_data['high'].iloc[-1], 
+                    current_low=current_data['low'].iloc[-1], 
+                    current_time=current_time, 
+                    recent_vols={ '5': vol5, '10': vol10, '15': vol15 },
+                )
 
-            self.process_new_candle(current_data, current_htf_data, current_time)
+            print("======================")
+            print(f"Active setups: {self.strategy.active_setups}")
 
         # Close any remaining position
         if self.current_position:
-            final_price = data['close'].iloc[-1]
-            self.handle_position_close(final_price, datetime.fromtimestamp(data.index[-1]))
+            self.handle_position_close(datetime.fromtimestamp(data.index[-1]))
 
         print(f"Real data backtest completed. Total trades: {len(self.trades)}")
         return self.trades
 
 
-    def handle_positions(self, current_price, current_high, current_low, current_time):
-        if not self.current_position:
-            position = self.check_position_opened(current_high, current_low)
-            if position:
-                print("POSITION FOUND")
-                self.handle_position_open(position, current_time)
-                if self.check_position_closed(current_price):
-                    self.handle_position_close(current_price, current_time)
-        else:
-            if self.check_position_closed(current_price):
-                self.handle_position_close(current_price, current_time)
-
-
-    def check_position_opened(self, current_high, current_low):
-        sorted_setups = sorted(
-            self.strategy.active_setups,
-            key = lambda setup: setup['fvg']['top'],
-            reverse=True,
-        )
-        sorted_setups = [setup for setup in sorted_setups if not setup['fvg']['filled']]
-
-        for setup in sorted_setups:
-            fvg_midpoint = (setup['fvg']['top'] + setup['fvg']['bottom']) / 2
-            if current_high >= fvg_midpoint >= current_low:
-                return setup
-        return None

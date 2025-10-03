@@ -1,5 +1,4 @@
 import pandas as pd
-from helpers.hyperliquid_client import HyperliquidClient
 from helpers.telegram_setup import send_telegram_message, is_stop_requested, send_telegram_image
 from config import *
 from credentials import *
@@ -12,15 +11,11 @@ import matplotlib.pyplot as plt
 import os
 import shutil
 import ccxt
+import numpy as np
 
 class LiveTrader(BaseTrader):
     def __init__(self, symbol):
-        super().__init__(symbol, 10_000)
-
-        self.client = HyperliquidClient(
-            api_key=None,  # No API key needed for paper trading
-            subaccount=HYPERLIQUID_SUBACCOUNT,
-        )
+        super().__init__(symbol, 10_000, telegram=True)
 
         self.ssl_context = ssl.create_default_context(cafile=certifi.where())
 
@@ -34,98 +29,7 @@ class LiveTrader(BaseTrader):
             "privateKey": "",  # No private key needed for paper trading
         })
 
-        self.plot_times = []
-        self.plot_opens = []
-
         self.current_price = 0
-        self.last_price = 0
-
-
-    def create_and_send_images(self):
-        winning_trades = [t for t in self.trades if t['pnl_dollar'] > 0]
-        losing_trades = [t for t in self.trades if t['pnl_dollar'] < 0]
-
-        plt.plot(self.plot_times, self.plot_opens, color="blue", alpha=0.5, linewidth=1)
-
-        for trade in winning_trades:
-            entry_idx = trade["entry_time"]
-            exit_idx = trade["exit_time"]
-
-            plt.plot([entry_idx, exit_idx],  # x-coordinates of the two points
-                     [trade["entry_price"], trade["exit_price"]],  # y-coordinates of the two points
-                     color='green', linestyle='--', linewidth=5)
-
-        for trade in losing_trades:
-            entry_idx = trade["entry_time"]
-            exit_idx = trade["exit_time"]
-
-            plt.plot([entry_idx, exit_idx],  # x-coordinates of the two points
-                     [trade["entry_price"], trade["exit_price"]],  # y-coordinates of the two points
-                     color='red', linestyle='--', linewidth=5)
-
-        plt.savefig("backtest.png")
-        plt.close()
-
-        if os.path.exists('trades'):
-            shutil.rmtree("trades")
-        os.makedirs("trades", exist_ok=True)
-        os.makedirs("trades/wins", exist_ok=True)
-        os.makedirs("trades/losses", exist_ok=True)
-        for i, trade in enumerate(self.trades):
-            entry_idx = trade['entry_idx']
-            exit_idx = trade['exit_idx']
-
-            plt.figure(figsize=(15, 8))
-            plt.margins(x=0.1)
-            plt.tight_layout()
-            fig, ax = plt.subplots()
-            print(f"Trade {i + 1}, entry {entry_idx}, fvg index {trade['fvg']['start_idx']}")
-
-            for idx in range(trade['fvg']['start_idx'] - 2, min(exit_idx+9, len(self.full_data) - 1)):
-                candle = self.full_data.iloc[idx]
-                boxplot_data = [[candle["low"], candle["open"], candle["close"], candle["high"]]]
-
-                if idx == entry_idx:
-                    boxprops = {'facecolor': 'green', 'alpha': 1}
-                elif idx == exit_idx:
-                    boxprops = {'facecolor': 'red', 'alpha': 1}
-                elif idx == self.full_data.index.get_loc(trade['fvg']['start_idx']):
-                    boxprops = {'facecolor': 'orange', 'alpha': 1}
-                elif idx in trade['indicator']:
-                    color = 'yellow' if trade['indicator_type'] == 'mss' else 'blue'
-                    boxprops = {'facecolor': color, 'alpha': 1}
-                elif idx > entry_idx and idx < exit_idx:
-                    if candle["close"] >= candle["open"]:
-                        boxprops = {'facecolor': 'green', 'alpha': 0.4}
-                    else:
-                        boxprops = {'facecolor': 'red', 'alpha': 0.4}
-                else:
-                    boxprops = {'facecolor': 'white', 'alpha': 1.0}
-
-                ax.boxplot(
-                    boxplot_data,
-                    positions=[(idx - entry_idx + 1) * 3],
-                    widths=2,
-                    showfliers=False,
-                    manage_ticks=True,
-                    medianprops={'linewidth': 0},
-                    boxprops=boxprops,
-                    patch_artist=True,
-                )
-
-            trade_direction = trade['direction'].upper()
-            trade_result = "WIN" if trade['pnl_dollar'] > 0 else "LOSS"
-            plt.title(f"Trade #{entry_idx}: {trade_direction} - {trade_result} (${trade['pnl_dollar']:.2f})")
-
-            ax.tick_params(axis='both', labelsize=6)
-            plt.tight_layout()
-
-            if trade in winning_trades:
-                plt.savefig(f"trades/wins/trade_{i + 1}.png", dpi=600, bbox_inches="tight")
-            else:
-                plt.savefig(f"trades/losses/trade_{i + 1}.png", dpi=600, bbox_inches="tight")
-
-            plt.close("all")
 
 
     async def fetch_initial_data(self):
@@ -166,7 +70,7 @@ class LiveTrader(BaseTrader):
             return None, None, None
 
 
-    async def handle_candle_data(self, ltf_candle, htf_candle, current_time):
+    def handle_candle_data(self, ltf_candle, htf_candle, current_time):
         last_ltf_time = self.ltf_data['T'].iloc[-1]
         last_htf_time = self.htf_data['T'].iloc[-1]
 
@@ -177,33 +81,15 @@ class LiveTrader(BaseTrader):
             self.ltf_data = pd.concat([self.ltf_data, pd.DataFrame([ltf_candle])], ignore_index=True)
             self.ltf_data = self.ltf_data.iloc[-self.ltf_lookback:].reset_index(drop=True)
             print("Processing new candle")
-            self.process_new_candle(ltf_data=self.ltf_data, htf_data=self.htf_data, timestamp=current_time,
-                                    telegram=True)
-
-
-    def check_position_opened(self, current_price, last_price):
-        sorted_setups = sorted(
-            self.strategy.active_setups,
-            key = lambda setup: setup['fvg']['top'],
-            reverse=True,
-        )
-
-        for setup in sorted_setups:
-            fvg_midpoint = (setup['fvg']['top'] + setup['fvg']['bottom']) / 2
-            if ((current_price >= fvg_midpoint >= last_price)
-                or (current_price <= fvg_midpoint <= last_price)):
-                return setup
-
-
-    async def handle_price_data(self, current_price, current_high, current_low):
-        if not self.current_position:
-            position = self.check_position_opened(current_high, current_low)
-            if position:
-                print("POSITION FOUND")
-                self.handle_position_open(position, datetime.now(), telegram=True, symbol=self.symbol)
-        else:
-            if self.check_position_closed(current_price):
-                self.handle_position_close(current_price, datetime.now(), telegram=True, symbol=self.symbol)
+            print("======================")
+            print(f"LTF Tail: {self.ltf_data.tail(5)}")
+            print(f"HTF Tail: {self.htf_data.tail(5)}")
+            print(f"Active fvg count: {len(self.strategy.active_fvgs)}")
+            print(f"Active fvgs: {self.strategy.active_fvgs}")
+            print(f"Active setup count: {len(self.strategy.active_setups)}")
+            print(f"Active setups: {self.strategy.active_setups}")
+            print("======================")
+            self.process_new_candle(ltf_data=self.ltf_data, htf_data=self.htf_data, timestamp=current_time)
 
 
     async def run_paper_trading(self, duration_minutes=None):
@@ -259,19 +145,23 @@ class LiveTrader(BaseTrader):
                     'close': htf_candle[0][4],
                 }
 
-                self.last_price = self.current_price
                 current_ticker = self.dex.fetch_ticker(self.symbol + '/USDC:USDC')
                 self.current_price = current_ticker['last']
 
-                await self.handle_candle_data(ltf_candle, htf_candle, current_time)
+                self.handle_candle_data(ltf_candle, htf_candle, current_time)
 
                 if self.last_position_close_time:
                     if datetime.now() - self.last_position_close_time < timedelta(minutes=5):
-                        print("Position just closed, skipping candle")
+                        print("Position recently closed, skipping candle")
                         continue
 
-                await self.handle_price_data(current_price=self.current_price, current_high=current_high,
-                                             current_low=current_low)
+                vol5 = self.ltf_data['volume'].iloc[-5:].sum()
+                vol10 = self.ltf_data['volume'].iloc[-10:].sum()
+                vol15 = self.ltf_data['volume'].iloc[-15:].sum()
+                recent_vols = { '5': vol5, '10': vol10, '15': vol15 }
+
+                self.handle_positions(ltf_data=self.ltf_data, current_price=self.current_price, current_high=current_high,
+                                             current_low=current_low, current_time=current_time, trade_config="livetest", recent_vols=recent_vols)
 
                 await asyncio.sleep(5)
 
@@ -284,11 +174,9 @@ class LiveTrader(BaseTrader):
 
 
         if self.current_position:
-            final_price = self.ltf_data['close'].iloc[-1]
-            self.handle_position_close(final_price, datetime.now(), telegram=True)
+            self.handle_position_close(datetime.now())
 
-        self.create_and_send_images()
-
+        self.show_final_results(self.trades, "live test")
 
 trader = LiveTrader("SOL")
 asyncio.run(trader.run_paper_trading(duration_minutes=60*24))

@@ -48,7 +48,8 @@ def fetch_ohlc(symbol: str, month_year: str, interval="1m"):
             "open": float(k[1]),
             "high": float(k[2]),
             "low": float(k[3]),
-            "close": float(k[4])
+            "close": float(k[4]),
+            "volume": float(k[5]),
         })
 
     return json_data
