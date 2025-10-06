@@ -123,7 +123,7 @@ class BaseTrader:
         plt.margins(x=0.1)
         plt.tight_layout()
         fig, ax = plt.subplots()
-        print(f"Trade {len(self.trades)}, entry {entry_time}, fvg index {trade['fvg']['time']}")
+        print(f"Trade {len(self.trades)}, entry {entry_time}, fvg index {trade['fvg'].time}")
 
         for idx in range(0, len(candle_data)):
             candle = candle_data.iloc[idx]
@@ -133,7 +133,7 @@ class BaseTrader:
                 boxprops = {'facecolor': 'green', 'alpha': 1}
             elif idx == len(candle_data) - 1:
                 boxprops = {'facecolor': 'red', 'alpha': 1}
-            elif candle['T'] == trade['fvg']['time']:
+            elif candle['T'] == trade['fvg'].time:
                 boxprops = {'facecolor': 'orange', 'alpha': 1}
             elif candle['T'] == trade['indicator_time']:
                 color = 'yellow' if trade['indicator_type'] == 'mss' else 'blue'
@@ -196,7 +196,7 @@ class BaseTrader:
         risk_amount = self.risk_amount
         min_dist_percent = MIN_STOP_DISTANCE_COIN  # Use the config value
 
-        entry_price = (setup['fvg']['top'] + setup['fvg']['bottom']) / 2
+        entry_price = setup['fvg'].midpoint
         original_stop_distance = abs(entry_price - setup['stop_loss'])
         min_stop_distance = entry_price * min_dist_percent
         
@@ -239,14 +239,14 @@ class BaseTrader:
     def check_position_opened(self, current_high, current_low):
         sorted_setups = sorted(
             self.strategy.active_setups,
-            key = lambda setup: setup['fvg']['top'],
+            key = lambda setup: setup['fvg'].top,
             reverse=True,
         )
 
-        sorted_setups = [setup for setup in sorted_setups if not setup['fvg']['filled']]
+        sorted_setups = [setup for setup in sorted_setups if not setup['fvg'].filled]
 
         for setup in sorted_setups:
-            fvg_midpoint = (setup['fvg']['top'] + setup['fvg']['bottom']) / 2
+            fvg_midpoint = setup['fvg'].midpoint
             if current_high >= fvg_midpoint >= current_low:
                 return setup
         return None
@@ -291,7 +291,7 @@ class BaseTrader:
         print("OPEN ORDER BEING CALLED")
         position = self.create_open_order(setup, timestamp)
 
-        time_since_fvg = int((timestamp - setup['fvg']['time']).total_seconds() / 60)
+        time_since_fvg = int((timestamp - setup['fvg'].time).total_seconds() / 60)
         self.trade_df = ltf_data.tail(time_since_fvg + 20).reset_index(drop=True)
 
         telegram_text = ""
