@@ -24,6 +24,7 @@ MAX_LEVERAGE = {
 
 # Risk Management
 RISK_PER_TRADE = 150  # Fixed $100 risk per trade
+LIVE_RISK_AMOUNT = 0.3
 
 # Strategy Parameters (ACTUALLY USED)
 DISPLACEMENT_THRESHOLD = 0.3  # Used in displacement detection

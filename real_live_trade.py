@@ -145,9 +145,9 @@ class LiveTrader(LiveBaseTrader):
                 # Cancel all open orders, then place a stop loss
                 self.cancel_all_open_orders()
                 self.place_stop_loss_order(
-                    position_direction=position['direction'],
-                    stop_price=position['stop_loss'],
-                    quantity=position['quantity'],
+                    position_direction=position.direction,
+                    stop_price=position.stop_loss,
+                    quantity=position.quantity,
                 )
         if self.current_position:
             positions = self.dex.fetch_positions()
@@ -219,16 +219,16 @@ class LiveTrader(LiveBaseTrader):
         try:
             print("Managing current position")
             current_price = self.dex.fetch_ticker(self.symbol)['last']
-            old_stop = self.current_position['stop_loss']
+            old_stop = self.current_position.stop_loss
             self.strategy.update_trailing_stop(current_price=current_price, df=self.ltf_data, position=self.current_position, telegram=self.telegram)
-            new_stop = self.current_position['stop_loss']
+            new_stop = self.current_position.stop_loss
 
             if old_stop != new_stop:
                 print(f"New stop loss: {new_stop}")
                 self.place_stop_loss_order(
-                    position_direction=self.current_position['direction'],
-                    stop_price=self.current_position['stop_loss'],
-                    quantity=self.current_position['quantity'],
+                    position_direction=self.current_position.direction,
+                    stop_price=self.current_position.stop_loss,
+                    quantity=self.current_position.quantity,
                 )
         except Exception as e:
             print(f"Error managing position stops: {e}")
@@ -397,5 +397,7 @@ class LiveTrader(LiveBaseTrader):
 
         self.show_final_results(self.trades, "live test")
 
-trader = LiveTrader("SOL/USDC:USDC")
-asyncio.run(trader.run_trading_loop(duration_minutes=60*24*7))  # 7 days
+symbol = input("What symbol would you like to trade? (Do not include /USDC:USDC)\n") + "/USDC:USDC"
+
+trader = LiveTrader(symbol)
+asyncio.run(trader.run_trading_loop(duration_minutes=60*24*7))

@@ -266,21 +266,6 @@ class FVGStrategy:
                         })
 
 
-    def update_position(self, position: Dict, current_price: float):
-        """Update position with current market data"""
-        if not position:
-            return
-
-        # Update unrealized P&L
-        if position['direction'] == 'long':
-            position['unrealized_pnl'] = (current_price - position['entry_price']) / position['entry_price']
-        else:  # short
-            position['unrealized_pnl'] = (position['entry_price'] - current_price) / position['entry_price']
-
-        # Update position age
-        position['age'] = position.get('age', 0) + 1
-
-
     def _find_nearest_swing_low(self, df_analyzed: pd.DataFrame, current_price: float) -> Optional[float]:
         """Find the nearest swing low below current price for trailing stop"""
         # Get recent swing lows (last 50 candles)
@@ -325,29 +310,24 @@ class FVGStrategy:
             return False
 
         # Cancel if RR is not high enough
-        if position['direction'] == 'long':
-            risk = max(0.0, position['entry_price'] - position['stop_loss'])
+        if position.long:
+            risk = max(0.0, position.entry_price - position.stop_loss)
             if risk > 0:
-                reward = current_price - position['entry_price']
+                reward = current_price - position.entry_price
                 if reward < risk:
                     return False
         else: # short
-            risk = max(0.0, position['stop_loss'] - position['entry_price'])
+            risk = max(0.0, position.stop_loss - position.entry_price)
             if risk > 0:
-                reward = position['entry_price'] - current_price
+                reward = position.entry_price - current_price
                 if reward < risk:
                     return False
-
-
-        # Store original static stop if not already stored
-        if 'original_stop_loss' not in position:
-            position['original_stop_loss'] = position['stop_loss']
 
         # Now update trailing stop based on structure
         df_analyzed = self.analyzer.analyze_structure(df)
         updated = False
 
-        if position['direction'] == 'long':
+        if position.long:
             # Find all swing lows since last stop update
             recent_swings = df_analyzed.tail(50)
             swing_lows = recent_swings[recent_swings['swing_low'].notna()]
@@ -357,10 +337,9 @@ class FVGStrategy:
                 # Tighter stop distance - closer to swing low for faster trailing
                 new_stop = best_swing_low - STOP_LOSS_BUFFER
                 # Only move stop up (more favorable) - NEVER move down for longs
-                if new_stop > position['stop_loss'] and abs(new_stop - current_price) > MIN_STOP_DISTANCE_COIN:
-                    old_stop = position['stop_loss']
-                    position['stop_loss'] = new_stop
-                    position['last_stop_update_idx'] = swing_lows.index[-1]
+                if new_stop > position.stop_loss and abs(new_stop - current_price) > MIN_STOP_DISTANCE_COIN:
+                    old_stop = position.stop_loss
+                    position.stop_loss = new_stop
                     updated = True
                     print(f"📈 TRAILING STOP TRIGGERED! ${old_stop:.4f} → ${new_stop:.4f} (swing low: ${best_swing_low:.4f}")
 
@@ -368,9 +347,9 @@ class FVGStrategy:
                         telegram_message = "===== TRAILING STOP UPDATED =====\n"
                         telegram_message += f"Direction: Long\n"
 
-                        unrealized_pnl = (position['stop_loss'] - position['entry_price']) * position['quantity'] - position['entry_fees']
+                        unrealized_pnl = (position.stop_loss - position.entry_price) * position.quantity - position.entry_fees
 
-                        telegram_message += f"Stop loss: ${old_stop:.4f} → ${position['stop_loss']:.4f} (swing high: ${best_swing_low:.4f}\n"
+                        telegram_message += f"Stop loss: ${old_stop:.4f} → ${position.stop_loss:.4f} (swing high: ${best_swing_low:.4f}\n"
                         telegram_message += f"Unrealized P&L: ${unrealized_pnl:.4f} ({(unrealized_pnl / self.risk_amount) * 100}%)\n"
 
                         send_telegram_message(telegram_message)
@@ -389,11 +368,10 @@ class FVGStrategy:
                 best_swing_high = swing_highs['swing_high'].min()
                 new_stop = best_swing_high + STOP_LOSS_BUFFER
 
-                if new_stop < position['stop_loss'] and abs(new_stop - current_price) > MIN_STOP_DISTANCE_COIN:
+                if new_stop < position.stop_loss and abs(new_stop - current_price) > MIN_STOP_DISTANCE_COIN:
 
-                    old_stop = position['stop_loss']
-                    position['stop_loss'] = new_stop
-                    position['last_stop_update_idx'] = swing_highs.index[-1]
+                    old_stop = position.stop_loss
+                    position.stop_loss = new_stop
                     updated = True
                     print(f"📉 TRAILING STOP TRIGGERED! ${old_stop:.4f} → ${new_stop:.4f} (swing high: ${best_swing_high:.4f}")
 
@@ -401,9 +379,9 @@ class FVGStrategy:
                         telegram_message = "===== TRAILING STOP UPDATED =====\n"
                         telegram_message += f"Direction: Short\n"
 
-                        unrealized_pnl = (position['entry_price'] - position['stop_loss']) * position['quantity'] - position['entry_fees']
+                        unrealized_pnl = (position.entry_price - position.stop_loss) * position.quantity - position.entry_fees
 
-                        telegram_message += f"Stop loss: ${old_stop:.4f} → ${position['stop_loss']:.4f} (swing high: ${best_swing_high:.4f}"
+                        telegram_message += f"Stop loss: ${old_stop:.4f} → ${position.stop_loss:.4f} (swing high: ${best_swing_high:.4f}"
                         telegram_message += f"Unrealized P&L: ${unrealized_pnl:.4f} ({(unrealized_pnl / self.risk_amount) * 100}%)\n"
 
                         send_telegram_message(telegram_message)
@@ -413,7 +391,7 @@ class FVGStrategy:
                 print("Best swing high:", best_swing_high)
                 print("New stop:", new_stop)
 
-        print("Current stop:", position['stop_loss'])
+        print("Current stop:", position.stop_loss)
 
         return updated
 
