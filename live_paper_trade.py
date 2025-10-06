@@ -1,4 +1,5 @@
 import pandas as pd
+from helpers.hyperliquid_client import HyperliquidClient
 from helpers.telegram_setup import send_telegram_message, is_stop_requested, send_telegram_image
 from config import *
 from credentials import *
@@ -155,13 +156,8 @@ class LiveTrader(BaseTrader):
                         print("Position recently closed, skipping candle")
                         continue
 
-                vol5 = self.ltf_data['volume'].iloc[-5:].sum()
-                vol10 = self.ltf_data['volume'].iloc[-10:].sum()
-                vol15 = self.ltf_data['volume'].iloc[-15:].sum()
-                recent_vols = { '5': vol5, '10': vol10, '15': vol15 }
-
                 self.handle_positions(ltf_data=self.ltf_data, current_price=self.current_price, current_high=current_high,
-                                             current_low=current_low, current_time=current_time, trade_config="livetest", recent_vols=recent_vols)
+                                             current_low=current_low, current_time=current_time, trade_config="livetest")
 
                 await asyncio.sleep(5)
 
@@ -179,4 +175,4 @@ class LiveTrader(BaseTrader):
         self.show_final_results(self.trades, "live test")
 
 trader = LiveTrader("SOL")
-asyncio.run(trader.run_paper_trading(duration_minutes=60*24))
+asyncio.run(trader.run_paper_trading(duration_minutes=60*24*7))  # 7 days

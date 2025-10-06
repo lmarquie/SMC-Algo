@@ -7,15 +7,21 @@ import json
 import shutil
 import os
 
+from helpers.hyperliquid_client import HyperliquidClient
 import matplotlib.pyplot as plt
 from base_trader import BaseTrader
 from datetime import datetime
-from config import BACKTEST_RISK_PER_TRADE
 
 
 class BacktestTrader(BaseTrader):
     def __init__(self, symbol, initial_balance=10_000):
-        super().__init__(symbol, initial_balance, risk_amount=BACKTEST_RISK_PER_TRADE, telegram=False)
+        super().__init__(symbol, initial_balance, telegram=False)
+
+        self.plot_opens = np.array([])
+        self.open_times = np.array([])
+        self.open_values = np.array([])
+        self.close_times = np.array([])
+        self.close_values = np.array([])
 
 
     async def run_backtest(self, data):
@@ -53,20 +59,10 @@ class BacktestTrader(BaseTrader):
             current_htf_data = htf_data.iloc[max(0, htf_end_idx + 1 - self.htf_lookback):htf_end_idx + 1]
 
             self.process_new_candle(current_data, current_htf_data, current_time)
-            vol5 = current_data['volume'].iloc[-5:].sum()
-            vol10 = current_data['volume'].iloc[-10:].sum()
-            vol15 = current_data['volume'].iloc[-15:].sum()
 
             if (not self.last_position_close_time
                 or current_time - self.last_position_close_time > pd.Timedelta(minutes=self.trade_cooldown)):
-                self.handle_positions(
-                    current_data, 
-                    current_price=current_data['close'].iloc[-1], 
-                    current_high=current_data['high'].iloc[-1], 
-                    current_low=current_data['low'].iloc[-1], 
-                    current_time=current_time, 
-                    recent_vols={ '5': vol5, '10': vol10, '15': vol15 },
-                )
+                self.handle_positions(current_data, current_price=current_data['close'].iloc[-1], current_high=current_data['high'].iloc[-1], current_low=current_data['low'].iloc[-1], current_time=current_time)
 
             print("======================")
             print(f"Active setups: {self.strategy.active_setups}")

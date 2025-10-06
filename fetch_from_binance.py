@@ -48,8 +48,7 @@ def fetch_ohlc(symbol: str, month_year: str, interval="1m"):
             "open": float(k[1]),
             "high": float(k[2]),
             "low": float(k[3]),
-            "close": float(k[4]),
-            "volume": float(k[5]),
+            "close": float(k[4])
         })
 
     return json_data
@@ -58,18 +57,24 @@ def fetch_ohlc(symbol: str, month_year: str, interval="1m"):
 # Global constants
 SYMBOL = "SOLUSDC"  # Correct symbol format for Binance
 months = [
-    "07_2024",
-    "08_2024",
-    "09_2024",
-    "10_2024",
-    "11_2024",
-    "12_2024",
+    #"07_2024",
+    #"08_2024",
+    #"09_2024",
+    #"10_2024",
+    #"11_2024",
+    #"12_2024",
     "01_2025",
     "02_2025",
     "03_2025",
     "04_2025",
     "05_2025",
     "06_2025",
+    "07_2025",
+    "08_2025",
+    #"09_2025",
+    #"10_2025",
+    #"11_2025",
+    #"12_2025",
 ]
 
 # Fetch and save

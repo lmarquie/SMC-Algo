@@ -1,4 +1,5 @@
 import pandas as pd
+from helpers.hyperliquid_client import HyperliquidClient
 from helpers.telegram_setup import send_telegram_message, is_stop_requested, send_telegram_image
 from config import *
 from credentials import *
@@ -13,30 +14,6 @@ import shutil
 import ccxt
 import numpy as np
 import traceback
-
-
-class HyperliquidClient:
-    def __init__(self):
-        pass
-
-    def place_order(self):
-        pass
-
-    def place_stop_loss(self):
-        pass
-
-    def raise_alarm(self):
-        pass
-
-    def retrieve_orders(self):
-        pass
-
-    def match_position(self):
-        pass
-
-
-
-
 
 class LiveTrader(LiveBaseTrader):
     def __init__(self, symbol):
@@ -155,7 +132,7 @@ class LiveTrader(LiveBaseTrader):
 
     def update_position_entered(self):
         if not self.current_position:
-            positions = self.dex.fetch_positions(symbols=[self.symbol])
+            positions = self.dex.fetch_positions()
             if len(positions) > 1:
                 print(f"Multiple positions found, closing all: {positions}")
                 self.raise_alarm("Multiple positions found, closing all")
@@ -163,12 +140,7 @@ class LiveTrader(LiveBaseTrader):
             elif len(positions) == 1:
                 print(f"Current position: {positions[0]}")
                 position = self.find_matching_position(ccxt_position=positions[0])
-                vol5 = self.ltf_data['volume'].iloc[-5:].sum()
-                vol10 = self.ltf_data['volume'].iloc[-10:].sum()
-                vol15 = self.ltf_data['volume'].iloc[-15:].sum()
-                recent_vols = { '5': vol5, '10': vol10, '15': vol15 }
-
-                self.current_position = self.handle_position_open(position, self.ltf_data['T'].iloc[-1], self.ltf_data, recent_vols=recent_vols)
+                self.current_position = self.handle_position_open(position, datetime.now(), self.ltf_data)
 
                 # Cancel all open orders, then place a stop loss
                 self.cancel_all_open_orders()
@@ -178,7 +150,7 @@ class LiveTrader(LiveBaseTrader):
                     quantity=position['quantity'],
                 )
         if self.current_position:
-            positions = self.dex.fetch_positions(symbols=[self.symbol])
+            positions = self.dex.fetch_positions()
             if len(positions) == 0:
                 print("Position closed")
                 self.current_position = None
@@ -200,15 +172,15 @@ class LiveTrader(LiveBaseTrader):
     def find_matching_position(self, ccxt_position):
         try:
             valid_setups = [setup for setup in self.strategy.active_setups if setup['oid']]
-            if len(valid_setups) > 0:
-                if ccxt_position['side'] == 'long':
-                    return max(valid_setups, key=lambda setup: setup['entry_price'])
-                else: # short
-                    return min(valid_setups, key=lambda setup: setup['entry_price'])
+            if ccxt_position['side'] == 'long':
+                long_setups = [setup for setup in valid_setups if setup['direction'] == 'long']
+                highest_long_setup = max(long_setups, key=lambda setup: setup['entry_price'])
+                return highest_long_setup
+
             else:
-                self.raise_alarm("Position found without matching setup, closing positions")
-                self.close_all_open_positions()
-                self.cancel_all_open_orders()
+                short_setups = [setup for setup in valid_setups if setup['direction'] == 'short']
+                lowest_short_setup = min(short_setups, key=lambda setup: setup['entry_price'])
+                return lowest_short_setup
         except Exception as e:
             print(f"Error finding matching position: {e}")
             self.raise_alarm(f"Error finding matching position: {e}")
@@ -268,7 +240,7 @@ class LiveTrader(LiveBaseTrader):
             return
         print("Checking for new setups (manage_orders()...")
 
-        current_orders = self.dex.fetch_open_orders(symbol=self.symbol)
+        current_orders = self.dex.fetch_open_orders()
         current_order_ids = [order['id'] for order in current_orders]
 
         best_setup = max(self.strategy.active_setups, key=lambda x: x['entry_price'])
@@ -280,7 +252,7 @@ class LiveTrader(LiveBaseTrader):
             print(f"Placing new order: {best_setup}")
             self.place_order(best_setup)
 
-        updated_orders = self.dex.fetch_open_orders(symbol=self.symbol)
+        updated_orders = self.dex.fetch_open_orders()
         orders_to_cancel = [order for order in updated_orders if order['id'] != best_setup['oid']]
         for order in orders_to_cancel:
             result = self.dex.cancel_order(order['id'], symbol=self.symbol)
@@ -290,7 +262,7 @@ class LiveTrader(LiveBaseTrader):
 
 
     def cancel_all_open_orders(self):
-        orders = self.dex.fetch_open_orders(symbol=self.symbol)
+        orders = self.dex.fetch_open_orders()
         for order in orders:
             result = self.dex.cancel_order(order['id'], symbol=self.symbol)
             print(result)
@@ -299,7 +271,7 @@ class LiveTrader(LiveBaseTrader):
 
 
     def close_all_open_positions(self):
-        positions = self.dex.fetch_positions(symbols=[self.symbol])
+        positions = self.dex.fetch_positions()
         for position in positions:
             size = float(position['contracts'])
             current_price = self.dex.fetch_ticker(self.symbol)['last']
@@ -360,7 +332,7 @@ class LiveTrader(LiveBaseTrader):
         print(f"Trading symbol: {self.symbol}")
         message += f"Trading symbol: {self.symbol}\n"
         print(f"Risk per trade: ${self.risk_amount}")
-        message += f"Risk per trade: {LIVE_RISK_PER_TRADE}"
+        message += f"Risk per trade: {RISK_PER_TRADE}"
 
         send_telegram_message(message)
         self.ltf_data, self.htf_data = await self.fetch_initial_data()
@@ -376,6 +348,9 @@ class LiveTrader(LiveBaseTrader):
             try:
                 ltf_candle = self.dex.fetch_ohlcv(self.symbol, timeframe='1m', limit=2)
                 htf_candle = self.dex.fetch_ohlcv(self.symbol, timeframe='15m', limit=2)
+
+                current_high = ltf_candle[-1][2]
+                current_low = ltf_candle[-1][3]
                 current_time = datetime.fromtimestamp(ltf_candle[-1][0] / 1000)
 
                 ltf_candle = {
@@ -384,7 +359,6 @@ class LiveTrader(LiveBaseTrader):
                     'high': ltf_candle[0][2],
                     'low': ltf_candle[0][3],
                     'close': ltf_candle[0][4],
-                    'volume': ltf_candle[0][5],
                 }
                 htf_candle = {
                     'T': datetime.fromtimestamp(htf_candle[0][0] / 1000),
@@ -392,7 +366,6 @@ class LiveTrader(LiveBaseTrader):
                     'high': htf_candle[0][2],
                     'low': htf_candle[0][3],
                     'close': htf_candle[0][4],
-                    'volume': htf_candle[0][5],
                 }
 
                 current_ticker = self.dex.fetch_ticker(self.symbol)
@@ -421,12 +394,8 @@ class LiveTrader(LiveBaseTrader):
 
         if self.current_position:
             self.handle_position_close(datetime.now(), self.current_position)
-            self.cancel_all_open_orders()
-            self.close_all_open_positions()
 
         self.show_final_results(self.trades, "live test")
 
-symbol = input("What symbol would you like to trade? (Do not include /USDC:USDC)\n") + "/USDC:USDC"
-
-trader = LiveTrader(symbol)
-asyncio.run(trader.run_trading_loop(duration_minutes=60*24*7))
+trader = LiveTrader("SOL/USDC:USDC")
+asyncio.run(trader.run_trading_loop(duration_minutes=60*24*7))  # 7 days

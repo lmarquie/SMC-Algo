@@ -14,9 +14,9 @@ from credentials import *
 
 
 class BaseTrader:
-    def __init__(self, symbol, balance, risk_amount=1, telegram=False):
+    def __init__(self, symbol, balance, telegram=False):
         self.symbol = symbol
-        self.risk_amount = risk_amount
+        self.risk_amount = RISK_PER_TRADE  # Use config value
         self.strategy = FVGStrategy(risk_amount=self.risk_amount)
         self.current_position = None
         self.iteration = 0
@@ -88,21 +88,6 @@ class BaseTrader:
 
             avg_rr = avg_win / self.risk_amount
 
-            # volume calculations
-            avg_winning_vol5 = sum(trade['volume_5'] for trade in winning_trades) / len(winning_trades)
-            std_winning_vol5 = np.std([trade['volume_5'] for trade in winning_trades])
-            avg_winning_vol10 = sum(trade['volume_10'] for trade in winning_trades) / len(winning_trades)
-            std_winning_vol10 = np.std([trade['volume_10'] for trade in winning_trades])
-            avg_winning_vol15 = sum(trade['volume_15'] for trade in winning_trades) / len(winning_trades)
-            std_winning_vol15 = np.std([trade['volume_15'] for trade in winning_trades])
-
-            avg_losing_vol5 = sum(trade['volume_5'] for trade in losing_trades) / len(losing_trades)
-            std_losing_vol5 = np.std([trade['volume_5'] for trade in losing_trades])
-            avg_losing_vol10 = sum(trade['volume_10'] for trade in losing_trades) / len(losing_trades)
-            std_losing_vol10 = np.std([trade['volume_10'] for trade in losing_trades])
-            avg_losing_vol15 = sum(trade['volume_15'] for trade in losing_trades) / len(losing_trades)
-            std_losing_vol15 = np.std([trade['volume_15'] for trade in losing_trades])
-
             final_message += f"Final Balance: ${final_balance:,.2f}\n"
             final_message += f"Total P&L: ${total_pnl:.2f}\n"
             final_message += f"Total Return: {total_return:.2f}%\n"
@@ -113,14 +98,6 @@ class BaseTrader:
             final_message += f"Average Loss: ${avg_loss:.2f}\n"
             final_message += f"Profit Factor: {profit_factor:.2f}\n"
             final_message += f"Average R:R: {avg_rr:.2f}\n"  # Add average R:R
-
-            final_message += f"Average winning 5 min volume: {avg_winning_vol5:.2f}, std {std_winning_vol5:.2f}\n"
-            final_message += f"Average winning 10 min volume: {avg_winning_vol10:.2f}, std {std_winning_vol10:.2f}\n"
-            final_message += f"Average winning 15 min volume: {avg_winning_vol15:.2f}, std {std_winning_vol15:.2f}\n"
-
-            final_message += f"Average losing 5 min volume: {avg_losing_vol5:.2f}, std {std_losing_vol5:.2f}\n"
-            final_message += f"Average losing 10 min volume: {avg_losing_vol10:.2f}, std {std_losing_vol10:.2f}\n"
-            final_message += f"Average losing 15 min volume: {avg_losing_vol15:.2f}, std {std_losing_vol15:.2f}\n"
 
             final_message += f"Long Trades Taken: {len(long_trades)} / {len(trades)}\n"
             final_message += f"Short Trades Taken: {len(short_trades)} / {len(trades)}\n"
@@ -146,7 +123,7 @@ class BaseTrader:
         plt.margins(x=0.1)
         plt.tight_layout()
         fig, ax = plt.subplots()
-        print(f"Trade {len(self.trades)}, entry {entry_time}, fvg index {trade['fvg'].time}")
+        print(f"Trade {len(self.trades)}, entry {entry_time}, fvg index {trade['fvg']['time']}")
 
         for idx in range(0, len(candle_data)):
             candle = candle_data.iloc[idx]
@@ -156,7 +133,7 @@ class BaseTrader:
                 boxprops = {'facecolor': 'green', 'alpha': 1}
             elif idx == len(candle_data) - 1:
                 boxprops = {'facecolor': 'red', 'alpha': 1}
-            elif candle['T'] == trade['fvg'].time:
+            elif candle['T'] == trade['fvg']['time']:
                 boxprops = {'facecolor': 'orange', 'alpha': 1}
             elif candle['T'] == trade['indicator_time']:
                 color = 'yellow' if trade['indicator_type'] == 'mss' else 'blue'
@@ -183,12 +160,7 @@ class BaseTrader:
         ax.set_xticks([])
         trade_direction = trade['direction'].upper()
         trade_result = "WIN" if trade['pnl_dollar'] > 0 else "LOSS"
-        fig.suptitle(f"Trade #{entry_time}: {trade_direction} - {trade_result} (${trade['pnl_dollar']:.2f})")
-
-        vol_subtitle = f"5 min volume: {trade['volume_5']:.2f}, 10 min volume: {trade['volume_10']:.2f}, 15 min volume: {trade['volume_15']:.2f}"
-        ax.set_title(vol_subtitle, fontsize=12, color="gray")
-        
-
+        plt.title(f"Trade #{entry_time}: {trade_direction} - {trade_result} (${trade['pnl_dollar']:.2f})")
 
         ax.tick_params(axis='both', labelsize=6)
         plt.tight_layout()
@@ -216,15 +188,15 @@ class BaseTrader:
             # Only in non live-version, otherwise training stop handled in real_live_trade.py
             return
 
-        self.strategy.add_setups(ltf_data, htf_data)
+        self.strategy.check_entry_conditions(ltf_data, htf_data)
         self.strategy.update_active_setups(ltf_data)
 
 
-    def create_open_order(self, setup, timestamp, recent_vols=None):
+    def create_open_order(self, setup, timestamp):
         risk_amount = self.risk_amount
         min_dist_percent = MIN_STOP_DISTANCE_COIN  # Use the config value
 
-        entry_price = setup['fvg'].midpoint
+        entry_price = (setup['fvg']['top'] + setup['fvg']['bottom']) / 2
         original_stop_distance = abs(entry_price - setup['stop_loss'])
         min_stop_distance = entry_price * min_dist_percent
         
@@ -261,23 +233,20 @@ class BaseTrader:
             'full_exposure': full_exposure,
         }
 
-        for lookback, total_volume in recent_vols.items():
-            position[f"volume_{lookback}"] = total_volume
-
         return position
 
 
     def check_position_opened(self, current_high, current_low):
         sorted_setups = sorted(
             self.strategy.active_setups,
-            key = lambda setup: setup['fvg'].top,
+            key = lambda setup: setup['fvg']['top'],
             reverse=True,
         )
 
-        sorted_setups = [setup for setup in sorted_setups if not setup['fvg'].filled]
+        sorted_setups = [setup for setup in sorted_setups if not setup['fvg']['filled']]
 
         for setup in sorted_setups:
-            fvg_midpoint = setup['fvg'].midpoint
+            fvg_midpoint = (setup['fvg']['top'] + setup['fvg']['bottom']) / 2
             if current_high >= fvg_midpoint >= current_low:
                 return setup
         return None
@@ -294,14 +263,13 @@ class BaseTrader:
         return False
 
 
-    def handle_positions(self, ltf_data, current_price, current_open=None, current_high=None, current_low=None, current_time=None, trade_config="backtest", recent_vols=None):
+    def handle_positions(self, ltf_data, current_price, current_open=None, current_high=None, current_low=None, current_time=None, trade_config="backtest"):
         if not self.current_position:
             position = self.check_position_opened(current_high, current_low)
             if position:
                 print("POSITION FOUND")
-                if self.telegram:
-                    send_telegram_message(f"New position found at {current_time}")
-                self.current_position = self.handle_position_open(position, current_time, ltf_data, recent_vols=recent_vols)
+                send_telegram_message(f"New position found at {current_time}")
+                self.current_position = self.handle_position_open(position, current_time, ltf_data)
         else:
             if self.check_position_closed(current_price):
                 if trade_config == "livetest":
@@ -318,11 +286,11 @@ class BaseTrader:
                 self.handle_position_close(current_time)
 
 
-    def handle_position_open(self, setup, timestamp, ltf_data, recent_vols=None):
+    def handle_position_open(self, setup, timestamp, ltf_data):
         print("OPEN ORDER BEING CALLED")
-        position = self.create_open_order(setup, timestamp, recent_vols=recent_vols)
+        position = self.create_open_order(setup, timestamp)
 
-        time_since_fvg = int((timestamp - setup['fvg'].time).total_seconds() / 60)
+        time_since_fvg = int((timestamp - setup['fvg']['time']).total_seconds() / 60)
         self.trade_df = ltf_data.tail(time_since_fvg + 20).reset_index(drop=True)
 
         telegram_text = ""
@@ -335,9 +303,6 @@ class BaseTrader:
         telegram_text += f"Entry price: ${position['entry_price']:.4f}\n"
         telegram_text += f"Stop loss: ${position['stop_loss']:.4f}\n"
         telegram_text += f"Position quantity: {position['quantity']:.4f}\n"
-
-        for minutes, total_volume in recent_vols.items():
-            telegram_text = f"Volume in last {minutes} minutes: {total_volume}"
 
         telegram_text += f"Full exposure: ${position['full_exposure']:.2f}\n"
         telegram_text += f"Margin required: ${position['margin']:.2f}\n"
@@ -363,7 +328,7 @@ class BaseTrader:
             pnl_dollar *= -1
 
         final_exposure = exit_price * self.current_position['quantity']
-        exit_fees = final_exposure * 0.00045
+        exit_fees = final_exposure * 0.00015
         total_fees = self.current_position['entry_fees'] + exit_fees
         pnl_dollar -= total_fees
 
@@ -392,9 +357,6 @@ class BaseTrader:
             'indicator_type': self.current_position['indicator_type'],
             'fvg': self.current_position['fvg'],
             'pnl_dollar': pnl_dollar,
-            'volume_5': self.current_position['volume_5'],
-            'volume_10': self.current_position['volume_10'],
-            'volume_15': self.current_position['volume_15'],
         }
         self.trades.append(trade)
         print(f"Position closed: {pnl_dollar:.2f}")
@@ -436,7 +398,7 @@ class LiveBaseTrader(BaseTrader):
 
         super().__init__(symbol, balance, telegram)
 
-        self.risk_amount = LIVE_RISK_PER_TRADE
+        self.risk_amount = 0.3
         self.strategy = LiveFVGStrategy(self.cancel_order_by_id, self.risk_amount)
 
 
@@ -474,7 +436,7 @@ class LiveBaseTrader(BaseTrader):
             self.trade_df = pd.concat([self.trade_df, ltf_data.tail(1)], ignore_index=True)
             return
 
-        self.strategy.add_setups(ltf_data, htf_data)
+        self.strategy.check_entry_conditions(ltf_data, htf_data)
         self.strategy.update_active_setups(ltf_data)
 
 
