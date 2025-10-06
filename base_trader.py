@@ -268,7 +268,8 @@ class BaseTrader:
             position = self.check_position_opened(current_high, current_low)
             if position:
                 print("POSITION FOUND")
-                send_telegram_message(f"New position found at {current_time}")
+                if self.telegram:
+                    send_telegram_message(f"New position found at {current_time}")
                 self.current_position = self.handle_position_open(position, current_time, ltf_data)
         else:
             if self.check_position_closed(current_price):

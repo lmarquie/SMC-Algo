@@ -37,17 +37,6 @@ class FVGStrategy:
             if current_time - setup['indicator_time'] <= timedelta(minutes=self.max_entry_indicator_dist)
         ]
 
-        active_setups = []
-        for setup in self.active_setups:
-            fvg_midpoint = (setup['fvg']['top'] + setup['fvg']['bottom']) / 2
-            if setup['direction'] == 'long' and df['low'].iloc[-1] <= fvg_midpoint:
-                continue
-            elif setup['direction'] == 'short' and df['low'].iloc[-1] >= fvg_midpoint:
-                continue
-
-            active_setups.append(setup)
-        self.active_setups = active_setups
-
 
     def update_fvgs(self, df: pd.DataFrame) -> List[Dict]:
         """Update and maintain active FVGs"""
@@ -134,18 +123,20 @@ class FVGStrategy:
             return None
 
         # Step 3: Look for reversal of the pullback
-        current_low = df['low'].iloc[-1]
+        last_close = df['close'].iloc[-1]
+        last_high = df['high'].iloc[-1]
+        last_low = df['low'].iloc[-1]
         active_fvgs = self.update_fvgs(df)
 
         if larger_trend['trend'] == 'uptrend':
-            self._add_bullish_setups(df, active_fvgs, current_low, larger_trend)
+            self._add_bullish_setups(df, active_fvgs=active_fvgs, last_close=last_close, last_low=last_low, larger_trend=larger_trend)
 
         elif larger_trend['trend'] == 'downtrend':
-            self._add_bearish_setups(df, active_fvgs, current_low, larger_trend)
+            self._add_bearish_setups(df, active_fvgs=active_fvgs, last_close=last_close, last_high=last_high, larger_trend=larger_trend)
 
         return None
 
-    def _add_bullish_setups(self, df, active_fvgs, current_low, larger_trend):
+    def _add_bullish_setups(self, df, active_fvgs, last_close, last_low, larger_trend):
         bullish_fvgs = [fvg for fvg in active_fvgs if fvg['type'] == 'bullish']
 
         df_analyzed = self.analyzer.analyze_structure(df)
@@ -161,7 +152,7 @@ class FVGStrategy:
                         recent_df["bearish_mss"].sum() > 0
                 )
 
-                if current_low > fvg["top"] and not (has_bearish_reversal and REVERSAL_CONSTRAINT_ENABLED):
+                if last_close > fvg["top"] and not (has_bearish_reversal and REVERSAL_CONSTRAINT_ENABLED):
                     # Check if setup already exists for this FVG
                     fvg_already_has_setup = any(
                         setup['fvg']['time'] == fvg['time'] and setup['direction'] == 'long'
@@ -172,7 +163,7 @@ class FVGStrategy:
                         stop_loss = fvg['bottom'] - STOP_LOSS_BUFFER
 
                         # Find nearest swing low for structure-based stop
-                        nearest_swing_low = self._find_nearest_swing_low(df_analyzed, current_low)
+                        nearest_swing_low = self._find_nearest_swing_low(df_analyzed, last_low)
                         if nearest_swing_low:
                             swing_stop = nearest_swing_low - STOP_LOSS_BUFFER
                             # Use the LOWER of the two stops (FVG-based or structure-based)
@@ -203,7 +194,7 @@ class FVGStrategy:
                         })
 
 
-    def _add_bearish_setups(self, df, active_fvgs, current_low, larger_trend):
+    def _add_bearish_setups(self, df, active_fvgs, last_close, last_high, larger_trend):
         bearish_fvgs = [fvg for fvg in active_fvgs if fvg['type'] == 'bearish']
         df_analyzed = self.analyzer.analyze_structure(df)
         present_bearish_movement = df_analyzed["bearish_bos"].iloc[-1] or df_analyzed["bearish_mss"].iloc[-1]
@@ -218,7 +209,7 @@ class FVGStrategy:
                         recent_df["bullish_mss"].sum() > 0
                 )
 
-                if current_low < fvg["bottom"] and not (has_bullish_reversal and REVERSAL_CONSTRAINT_ENABLED):
+                if last_close < fvg["bottom"] and not (has_bullish_reversal and REVERSAL_CONSTRAINT_ENABLED):
                     # Check if setup already exists for this FVG
                     fvg_already_has_setup = any(
                         setup['fvg']['time'] == fvg['time'] and setup['direction'] == 'short'
@@ -229,7 +220,7 @@ class FVGStrategy:
                         stop_loss = fvg['top'] + STOP_LOSS_BUFFER
 
                         # Find nearest swing high for structure-based stop
-                        nearest_swing_high = self._find_nearest_swing_high(df_analyzed, current_low)
+                        nearest_swing_high = self._find_nearest_swing_high(df_analyzed, last_high)
                         if nearest_swing_high:
                             swing_stop = nearest_swing_high + STOP_LOSS_BUFFER
                             # Use the HIGHER of the two stops (FVG-based or structure-based)
