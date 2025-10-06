@@ -416,17 +416,3 @@ class LiveFVGStrategy(FVGStrategy):
             setup for setup in self.active_setups
             if current_time - setup['indicator_time'] <= timedelta(minutes=self.max_entry_indicator_dist)
         ]
-
-        active_setups = []
-        for setup in self.active_setups:
-            if setup['oid'] is not None:
-                fvg_midpoint = setup['fvg'].midpoint
-                if setup['direction'] == 'long' and df['low'].iloc[-1] <= fvg_midpoint:
-                    self.cancel_order_by_id(setup['oid'])
-                    continue
-                elif setup['direction'] == 'short' and df['low'].iloc[-1] >= fvg_midpoint:
-                    self.cancel_order_by_id(setup['oid'])
-                    continue
-
-            active_setups.append(setup)
-        self.active_setups = active_setups
