@@ -174,11 +174,17 @@ class LiveTrader(LiveBaseTrader):
             valid_setups = [setup for setup in self.strategy.active_setups if setup['oid']]
             if ccxt_position['side'] == 'long':
                 long_setups = [setup for setup in valid_setups if setup['direction'] == 'long']
+                if not long_setups:
+                    print("No long setups found for matching position")
+                    return None
                 highest_long_setup = max(long_setups, key=lambda setup: setup['entry_price'])
                 return highest_long_setup
 
             else:
                 short_setups = [setup for setup in valid_setups if setup['direction'] == 'short']
+                if not short_setups:
+                    print("No short setups found for matching position")
+                    return None
                 lowest_short_setup = min(short_setups, key=lambda setup: setup['entry_price'])
                 return lowest_short_setup
         except Exception as e:
