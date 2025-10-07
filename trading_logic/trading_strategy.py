@@ -411,6 +411,7 @@ class LiveFVGStrategy(FVGStrategy):
         for setup in self.active_setups:
             if setup['oid'] is not None and current_time - setup['indicator_time'] > timedelta(minutes=self.max_entry_indicator_dist):
                 self.cancel_order_by_id(setup['oid'])
+                print(f"Cancelling order: {setup['oid']}")
 
         self.active_setups = [
             setup for setup in self.active_setups

@@ -191,12 +191,12 @@ class BaseTrader:
 
     def handle_positions(self, ltf_data, current_price, current_open=None, current_high=None, current_low=None, current_time=None, trade_config="backtest"):
         if not self.current_position:
-            position = self.check_position_opened(current_high, current_low)
-            if position:
+            setup = self.check_position_opened(current_high, current_low)
+            if setup:
                 print("POSITION FOUND")
                 if self.telegram:
                     send_telegram_message(f"New position found at {current_time}")
-                self.current_position = self.handle_position_open(position, current_time, ltf_data)
+                self.current_position = self.handle_position_open(setup, current_time, ltf_data)
         else:
             if self.check_position_closed(current_price):
                 if trade_config == "livetest":
@@ -216,6 +216,7 @@ class BaseTrader:
     def handle_position_open(self, setup, timestamp, ltf_data):
         print("OPEN ORDER BEING CALLED")
         time_since_fvg = int((timestamp - setup['fvg'].time).total_seconds() / 60)
+
         trade_df = ltf_data.tail(time_since_fvg + 20).reset_index(drop=True)
 
         position = self.create_open_order(setup, trade_df, timestamp)
@@ -348,9 +349,11 @@ class LiveBaseTrader(BaseTrader):
             if order_id in current_order_ids:
                 result = self.dex.cancel_order(order_id, symbol=self.symbol)
                 print(result)
+                return True
         except Exception as e:
             print(f"Error cancelling order by id {order_id}: {e}")
             send_telegram_message(f"Error cancelling order by id {order_id}: {e}")
+            return False
 
 
     def process_new_candle(self, ltf_data, htf_data, timestamp):
