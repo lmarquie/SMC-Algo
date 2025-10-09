@@ -332,10 +332,20 @@ class FVGStrategy:
         df_analyzed = self.analyzer.analyze_structure(df)
         updated = False
 
+        # Get the entry time index to only look at candles since trade started
+        entry_time = position.get('entry_time')
+        if entry_time:
+            # Find the index where the trade started
+            trade_start_idx = df_analyzed[df_analyzed.index >= entry_time].index[0] if len(df_analyzed[df_analyzed.index >= entry_time]) > 0 else df_analyzed.index[0]
+            # Look at last 50 candles, but never before trade entry
+            trade_swings = df_analyzed.loc[trade_start_idx:].tail(50)
+        else:
+            # Fallback to last 50 candles if no entry time
+            trade_swings = df_analyzed.tail(50)
+
         if position['direction'] == 'long':
-            # Find all swing lows since last stop update
-            recent_swings = df_analyzed.tail(50)
-            swing_lows = recent_swings[recent_swings['swing_low'].notna()]
+            # Find all swing lows since trade started
+            swing_lows = trade_swings[trade_swings['swing_low'].notna()]
             if not swing_lows.empty:
                 # Find the HIGHEST swing low (most favorable for longs)
                 best_swing_low = swing_lows['swing_low'].max()
@@ -367,9 +377,8 @@ class FVGStrategy:
                         print("New stop:", new_stop)
 
         else:  # short
-            # Find all swing highs since last stop update
-            recent_swings = df_analyzed.tail(50)
-            swing_highs = recent_swings[recent_swings['swing_high'].notna()]
+            # Find all swing highs since trade started
+            swing_highs = trade_swings[trade_swings['swing_high'].notna()]
             if not swing_highs.empty:
                 best_swing_high = swing_highs['swing_high'].min()
                 new_stop = best_swing_high + STOP_LOSS_BUFFER
