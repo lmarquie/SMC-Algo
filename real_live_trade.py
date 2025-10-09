@@ -127,7 +127,7 @@ class LiveTrader(LiveBaseTrader):
                     price=setup['entry_price'],
                 )
                 setup['oid'] = result['id']
-                self.orders += setup
+                self.orders.append(setup)
 
             except Exception as e:
                 print(f"Error placing order: {e}")
@@ -231,7 +231,7 @@ class LiveTrader(LiveBaseTrader):
             print("Managing current position")
             current_price = self.dex.fetch_ticker(self.symbol)['last']
             old_stop = self.current_position.stop_loss
-            stop_df = self.current_position.trade_df.iloc[20:]
+            stop_df = self.current_position.trade_df[self.current_position.trade_df['T'] > self.current_position.entry_time]
             self.strategy.update_trailing_stop(current_price=current_price, df=stop_df, position=self.current_position, telegram=self.telegram)
             new_stop = self.current_position.stop_loss
 

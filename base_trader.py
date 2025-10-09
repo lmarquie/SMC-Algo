@@ -122,7 +122,7 @@ class BaseTrader:
             print(self.current_position.trade_df)
             self.current_position.trade_df = pd.concat([self.current_position.trade_df, ltf_data.tail(1)], ignore_index=True)
             current_price = ltf_data['close'].iloc[-1]
-            stop_df = self.current_position.trade_df.iloc[20:]
+            stop_df = self.current_position.trade_df[self.current_position.trade_df['T'] > self.current_position.entry_time]
             self.strategy.update_trailing_stop(current_price=current_price, df=stop_df, position=self.current_position, telegram=self.telegram)
             # Only in non live-version, otherwise training stop handled in real_live_trade.py
             return
