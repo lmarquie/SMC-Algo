@@ -16,16 +16,20 @@ class StructureAnalyzer:
         swing_highs = np.full(shape=len(highs), fill_value=np.nan)
         swing_lows = np.full(shape=len(highs), fill_value=np.nan)
 
-        for i in range(2, len(highs) - 2):
+        for i in range(3, len(highs) - 3):
             if (highs[i] > highs[i - 1]
                     and highs[i] > highs[i - 2]
+                    and highs[i] > highs[i - 3]
                     and highs[i] > highs[i + 1]
-                    and highs[i] > highs[i + 2]):
+                    and highs[i] > highs[i + 2]
+                    and highs[i] > highs[i + 3]):
                 swing_highs[i] = highs[i]
             if (lows[i] < lows[i - 1]
                     and lows[i] < lows[i - 2]
+                    and lows[i] < lows[i - 3]
                     and lows[i] < lows[i + 1]
-                    and lows[i] < lows[i + 2]):
+                    and lows[i] < lows[i + 2]
+                    and lows[i] < lows[i + 3]):
                 swing_lows[i] = lows[i]
 
         return swing_highs, swing_lows
