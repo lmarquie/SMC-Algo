@@ -335,8 +335,12 @@ class FVGStrategy:
         # Get the entry time index to only look at candles since trade started
         entry_time = position.get('entry_time')
         if entry_time:
-            # Find the index where the trade started
-            trade_start_idx = df_analyzed[df_analyzed.index >= entry_time].index[0] if len(df_analyzed[df_analyzed.index >= entry_time]) > 0 else df_analyzed.index[0]
+            # Find the index where the trade started by comparing with the 'T' column (datetime)
+            entry_mask = df_analyzed['T'] >= entry_time
+            if entry_mask.any():
+                trade_start_idx = df_analyzed[entry_mask].index[0]
+            else:
+                trade_start_idx = df_analyzed.index[0]
             # Look at last 50 candles, but never before trade entry
             trade_swings = df_analyzed.loc[trade_start_idx:].tail(50)
         else:
