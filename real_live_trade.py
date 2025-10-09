@@ -52,6 +52,7 @@ class LiveTrader(LiveBaseTrader):
                     "high": ltf_data[index][2],
                     "low": ltf_data[index][3],
                     "close": ltf_data[index][4],
+                    "volume": ltf_data[index][5] if len(ltf_data[index]) > 5 else 0,
                 })
             for index in range(len(htf_data) - self.htf_lookback - 1, len(htf_data) - 1):
                 htf_list.append({
@@ -60,6 +61,7 @@ class LiveTrader(LiveBaseTrader):
                     "high": htf_data[index][2],
                     "low": htf_data[index][3],
                     "close": htf_data[index][4],
+                    "volume": htf_data[index][5] if len(htf_data[index]) > 5 else 0,
                 })
 
             ltf_df = pd.DataFrame(ltf_list)
