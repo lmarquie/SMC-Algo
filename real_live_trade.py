@@ -101,7 +101,7 @@ class LiveTrader(LiveBaseTrader):
                     price=setup['entry_price'],
                 )
                 setup['oid'] = result['id']
-                self.orders += setup
+                self.orders.append(setup)
 
             except Exception as e:
                 print(f"Error placing order: {e}")
@@ -143,7 +143,7 @@ class LiveTrader(LiveBaseTrader):
 
     def update_position_entered(self):
         if not self.current_position:
-            positions = self.dex.fetch_positions()
+            positions = self.dex.fetch_positions(symbols=[self.symbol])
             if len(positions) > 1:
                 print(f"Multiple positions found, closing all: {positions}")
                 self.raise_alarm("Multiple positions found, closing all")
@@ -163,7 +163,7 @@ class LiveTrader(LiveBaseTrader):
                         quantity=order['quantity'],
                     )
         if self.current_position:
-            positions = self.dex.fetch_positions()
+            positions = self.dex.fetch_positions(symbols=[self.symbol])
             if len(positions) == 0:
                 print("Position closed")
                 self.current_position = None
@@ -231,7 +231,8 @@ class LiveTrader(LiveBaseTrader):
             print("Managing current position")
             current_price = self.dex.fetch_ticker(self.symbol)['last']
             old_stop = self.current_position.stop_loss
-            self.strategy.update_trailing_stop(current_price=current_price, df=self.ltf_data, position=self.current_position, telegram=self.telegram)
+            stop_df = self.current_position.trade_df.iloc[20:]
+            self.strategy.update_trailing_stop(current_price=current_price, df=stop_df, position=self.current_position, telegram=self.telegram)
             new_stop = self.current_position.stop_loss
 
             if old_stop != new_stop:
@@ -251,7 +252,7 @@ class LiveTrader(LiveBaseTrader):
             return
         print("Checking for new setups (manage_orders()...")
 
-        current_orders = self.dex.fetch_open_orders()
+        current_orders = self.dex.fetch_open_orders(symbol=self.symbol)
         current_order_ids = [order['id'] for order in current_orders]
 
         best_setup = max(self.strategy.active_setups, key=lambda x: x['entry_price'])
@@ -263,7 +264,7 @@ class LiveTrader(LiveBaseTrader):
             print(f"Placing new order: {best_setup}")
             self.place_order(best_setup)
 
-        updated_orders = self.dex.fetch_open_orders()
+        updated_orders = self.dex.fetch_open_orders(symbol=self.symbol)
         orders_to_cancel = [order for order in updated_orders if order['id'] != best_setup['oid']]
         for order in orders_to_cancel:
             result = self.dex.cancel_order(order['id'], symbol=self.symbol)
@@ -273,7 +274,7 @@ class LiveTrader(LiveBaseTrader):
 
 
     def cancel_all_open_orders(self):
-        orders = self.dex.fetch_open_orders()
+        orders = self.dex.fetch_open_orders(symbol=self.symbol)
         for order in orders:
             result = self.dex.cancel_order(order['id'], symbol=self.symbol)
             print(result)
@@ -282,7 +283,7 @@ class LiveTrader(LiveBaseTrader):
 
 
     def close_all_open_positions(self):
-        positions = self.dex.fetch_positions()
+        positions = self.dex.fetch_positions(symbols=[self.symbol])
         for position in positions:
             size = float(position['contracts'])
             current_price = self.dex.fetch_ticker(self.symbol)['last']

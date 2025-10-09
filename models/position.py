@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 from helpers.telegram_setup import send_telegram_image
 from config import *
+import pandas as pd
 
 class Position:
     def __init__(self, symbol, risk_amount, stop_distance, entry_time, direction, trade_df, fvg, indicator_type, indicator_time, larger_trend, trend_confidence):

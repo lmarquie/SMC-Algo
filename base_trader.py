@@ -122,7 +122,8 @@ class BaseTrader:
             print(self.current_position.trade_df)
             self.current_position.trade_df = pd.concat([self.current_position.trade_df, ltf_data.tail(1)], ignore_index=True)
             current_price = ltf_data['close'].iloc[-1]
-            self.strategy.update_trailing_stop(current_price=current_price, df=ltf_data, position=self.current_position, telegram=self.telegram)
+            stop_df = self.current_position.trade_df.iloc[20:]
+            self.strategy.update_trailing_stop(current_price=current_price, df=stop_df, position=self.current_position, telegram=self.telegram)
             # Only in non live-version, otherwise training stop handled in real_live_trade.py
             return
 
@@ -342,7 +343,7 @@ class LiveBaseTrader(BaseTrader):
         send_telegram_message(error)
 
 
-    def cancel_order_by_id(self, order_id):
+    def cancel_order_by_id(self, order_id: str):
         try:
             current_open_orders = self.dex.fetch_open_orders(symbol=self.symbol)
             current_order_ids = [order['id'] for order in current_open_orders]
