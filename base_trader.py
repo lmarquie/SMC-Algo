@@ -350,7 +350,7 @@ class LiveBaseTrader(BaseTrader):
             if order_id in current_order_ids:
                 result = self.dex.cancel_order(order_id, symbol=self.symbol)
                 print(result)
-                return True
+            return True
         except Exception as e:
             print(f"Error cancelling order by id {order_id}: {e}")
             send_telegram_message(f"Error cancelling order by id {order_id}: {e}")
