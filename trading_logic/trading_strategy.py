@@ -186,7 +186,9 @@ class FVGStrategy:
 
                         # TEMP SOLUTION
                         entry_price = fvg.midpoint
-                        stop_distance = entry_price * MIN_STOP_DISTANCE_COIN
+                        stop_distance = entry_price - stop_loss
+                        if stop_distance < entry_price * MIN_STOP_DISTANCE_COIN:
+                            stop_distance = entry_price * MIN_STOP_DISTANCE_COIN
                         stop_loss = entry_price - stop_distance
                         quantity = self.risk_amount / stop_distance
 
@@ -243,7 +245,9 @@ class FVGStrategy:
 
                         # TEMP SOLUTION
                         entry_price = fvg.midpoint
-                        stop_distance = entry_price * MIN_STOP_DISTANCE_COIN
+                        stop_distance = stop_loss - entry_price
+                        if stop_distance < entry_price * MIN_STOP_DISTANCE_COIN:
+                            stop_distance = entry_price * MIN_STOP_DISTANCE_COIN
                         stop_loss = entry_price + stop_distance
                         quantity = self.risk_amount / stop_distance
 
