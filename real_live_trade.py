@@ -162,7 +162,7 @@ class LiveTrader(LiveBaseTrader):
                         stop_price=order['stop_loss'],
                         quantity=order['quantity'],
                     )
-        if self.current_position:
+        elif self.current_position:
             positions = self.dex.fetch_positions(symbols=[self.symbol])
             if len(positions) == 0:
                 print("Position closed")
