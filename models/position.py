@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 from helpers.telegram_setup import send_telegram_image
 from config import *
 import pandas as pd
+import numpy as np
 
 class Position:
     def __init__(self, symbol, risk_amount, stop_distance, entry_time, direction, trade_df, fvg, indicator_type, indicator_time, larger_trend, trend_confidence):
@@ -35,6 +36,7 @@ class Position:
         self.bos = indicator_type == 'bos'
 
         self.setup_volumes = {}
+        self.stop_losses = []
 
 
     def create_candle_chart(self, exit_time, pnl_dollar, id, telegram):
@@ -78,6 +80,14 @@ class Position:
                 patch_artist=True,
             )
 
+        for stop_loss in self.stop_losses:
+            swing_point = (stop_loss['swing_idx'] + 1) * 3
+            placement_point = (stop_loss['placement_idx'] + 1) * 3
+            value = stop_loss['value']
+            end_point = (int(len(self.trade_df) + 1)) * 3
+            plt.hlines(y=value, xmin=swing_point, xmax=end_point, color='black', linewidth=1, linestyle='--')
+            plt.scatter(placement_point, value, s=5, color='black', marker='o')
+
         ax.set_xticks([])
         trade_direction = self.direction.upper()
         trade_result = "WIN" if pnl_dollar > 0 else "LOSS"
@@ -109,3 +119,6 @@ class Position:
 
     def add_setup_volume(self, lookback, total_volume):
         self.setup_volumes[f'volume_{lookback}'] = total_volume
+
+    def get_idx(self):
+        return len(self.trade_df) - 1

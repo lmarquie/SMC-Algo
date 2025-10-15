@@ -1,6 +1,6 @@
 from config import *
 from typing import Dict
-from trading_logic.trading_strategy import FVGStrategy, LiveFVGStrategy
+from trading_logic.trading_strategy import FVGStrategy
 import numpy as np
 from helpers.telegram_setup import send_telegram_message
 import pandas as pd
@@ -115,6 +115,8 @@ class BaseTrader:
             send_telegram_message(final_message)
 
 
+    # EFFECTS: updates trailing stop if in position,
+    #          adds setups and updates setups/fvgs each iteration
     def process_new_candle(self, ltf_data, htf_data, timestamp):
         print(f"Running iteration: time {timestamp}, balance: ${self.current_balance:.2f}")
         if self.current_position:
@@ -122,21 +124,19 @@ class BaseTrader:
             print(self.current_position.trade_df)
             self.current_position.trade_df = pd.concat([self.current_position.trade_df, ltf_data.tail(1)], ignore_index=True)
             current_price = ltf_data['close'].iloc[-1]
-            stop_df = self.current_position.trade_df[self.current_position.trade_df['T'] > self.current_position.entry_time]
-            self.strategy.update_trailing_stop(current_price=current_price, df=stop_df, position=self.current_position, telegram=self.telegram)
-            # Only in non live-version, otherwise training stop handled in real_live_trade.py
-            return
-
-        self.strategy.check_entry_conditions(ltf_data, htf_data)
-        self.strategy.update_active_setups(ltf_data)
+            self.strategy.update_trailing_stop(current_price=current_price, position=self.current_position, telegram=self.telegram)
+        else:
+            self.strategy.check_entry_conditions(ltf_data, htf_data)
+            self.strategy.update_active_setups(ltf_data)
+        
 
 
     def create_open_order(self, setup, trade_df, timestamp):
         risk_amount = self.risk_amount
         min_dist_percent = MIN_STOP_DISTANCE_COIN  # Use the config value
 
-        entry_price = setup['fvg'].midpoint
-        original_stop_distance = abs(entry_price - setup['stop_loss'])
+        entry_price = setup.fvg.midpoint
+        original_stop_distance = abs(entry_price - setup.stop_loss)
         min_stop_distance = entry_price * min_dist_percent
         
         # Enforce the minimum stop distance
@@ -151,13 +151,13 @@ class BaseTrader:
             risk_amount=risk_amount,
             stop_distance=stop_distance,
             entry_time=timestamp,
-            direction=setup['direction'],
+            direction=setup.direction,
             trade_df=trade_df,
-            fvg=setup['fvg'],
-            indicator_type=setup['indicator_type'],
-            indicator_time=setup['indicator_time'],
-            larger_trend=setup['larger_trend'],
-            trend_confidence=setup['trend_confidence'],
+            fvg=setup.fvg,
+            indicator_type=setup.indicator_type,
+            indicator_time=setup.indicator_time,
+            larger_trend=setup.larger_trend,
+            trend_confidence=setup.trend_confidence,
         )
 
         return position
@@ -166,25 +166,25 @@ class BaseTrader:
     def check_position_opened(self, current_high, current_low):
         sorted_setups = sorted(
             self.strategy.active_setups,
-            key = lambda setup: setup['fvg'].top,
+            key = lambda setup: setup.fvg.top,
             reverse=True,
         )
 
-        sorted_setups = [setup for setup in sorted_setups if not setup['fvg'].filled]
+        sorted_setups = [setup for setup in sorted_setups if not setup.fvg.filled]
 
         for setup in sorted_setups:
-            fvg_midpoint = setup['fvg'].midpoint
+            fvg_midpoint = setup.fvg.midpoint
             if current_high >= fvg_midpoint >= current_low:
                 return setup
         return None
 
 
-    def check_position_closed(self, current_price):
+    def check_position_closed(self, current_high, current_low):
         if self.current_position.long:
-            if current_price <= self.current_position.stop_loss:
+            if current_low <= self.current_position.stop_loss:
                 return True
         elif self.current_position.short:
-            if current_price >= self.current_position.stop_loss:
+            if current_high >= self.current_position.stop_loss:
                 return True
 
         return False
@@ -199,7 +199,7 @@ class BaseTrader:
                     send_telegram_message(f"New position found at {current_time}")
                 self.current_position = self.handle_position_open(setup, current_time, ltf_data)
         else:
-            if self.check_position_closed(current_price):
+            if self.check_position_closed(current_high, current_low):
                 if trade_config == "livetest":
                     last_candle = [{
                         'T': current_time,
@@ -216,7 +216,7 @@ class BaseTrader:
 
     def handle_position_open(self, setup, timestamp, ltf_data):
         print("OPEN ORDER BEING CALLED")
-        time_since_fvg = int((timestamp - setup['fvg'].time).total_seconds() / 60)
+        time_since_fvg = int((timestamp - setup.fvg.time).total_seconds() / 60)
 
         trade_df = ltf_data.tail(time_since_fvg + 20).reset_index(drop=True)
 
@@ -326,7 +326,7 @@ class LiveBaseTrader(BaseTrader):
         super().__init__(symbol, balance, telegram)
 
         self.risk_amount = LIVE_RISK_AMOUNT
-        self.strategy = LiveFVGStrategy(self.cancel_order_by_id, self.risk_amount)
+        self.strategy = FVGStrategy(self.risk_amount)
 
 
     def retrieve_balance(self):
