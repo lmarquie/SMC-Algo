@@ -120,11 +120,12 @@ class StructureAnalyzer:
                 # Calculate FVG size and validate structure
                 fvg_size = c3_low - c1_high
                 fvg_midpoint = c1_high + (fvg_size / 2)
+                c2_size = c2_high - c2_low
                 
                 # Validate: candle before can't go more than 1/3 up the FVG
-                max_before_penetration = c1_high + (fvg_size / 3)
+                max_before_penetration = c2_low + (c2_size / 3)
                 # Validate: candle after can't go more than 1/3 down the FVG  
-                min_after_penetration = c3_low - (fvg_size / 3)
+                min_after_penetration = c2_high - (c2_size / 3)
                 
                 # Check if candle before (c1) didn't penetrate too much
                 before_valid = c1_high <= max_before_penetration
@@ -133,7 +134,6 @@ class StructureAnalyzer:
                 
                 # Check if FVG candle (c2) is larger than both surrounding candles
                 c1_size = c1_high - c1_low
-                c2_size = c2_high - c2_low  
                 c3_size = c3_high - c3_low
                 fvg_candle_largest = (c2_size > c1_size) and (c2_size > c3_size)
                 
@@ -165,11 +165,12 @@ class StructureAnalyzer:
                 # Calculate FVG size and validate structure
                 fvg_size = c1_low - c3_high
                 fvg_midpoint = c3_high + (fvg_size / 2)
+                c2_size = c2_high - c2_low 
                 
                 # Validate: candle before can't go more than 1/3 down the FVG
-                min_before_penetration = c1_low - (fvg_size / 3)
+                min_before_penetration = c2_high - (c2_size / 3)
                 # Validate: candle after can't go more than 1/3 up the FVG
-                max_after_penetration = c3_high + (fvg_size / 3)
+                max_after_penetration = c2_low + (c2_size / 3)
                 
                 # Check if candle before (c1) didn't penetrate too much
                 before_valid = c1_low >= min_before_penetration
@@ -177,8 +178,7 @@ class StructureAnalyzer:
                 after_valid = c3_high <= max_after_penetration
                 
                 # Check if FVG candle (c2) is larger than both surrounding candles
-                c1_size = c1_high - c1_low
-                c2_size = c2_high - c2_low  
+                c1_size = c1_high - c1_low 
                 c3_size = c3_high - c3_low
                 fvg_candle_largest = (c2_size > c1_size) and (c2_size > c3_size)
                 

@@ -28,10 +28,10 @@ class FVGStrategy:
         self.previous_fvg_times = []
         self.risk_amount = risk_amount
 
-        self.max_fvg_to_indicator_dist = 20
-        self.max_entry_indicator_dist = 20
+        self.max_fvg_to_indicator_dist = 8
+        self.max_entry_indicator_dist = 8
 
-        self.fvg_lookback = self.max_fvg_to_indicator_dist + self.max_entry_indicator_dist
+        self.fvg_lookback = self.max_fvg_to_indicator_dist
 
 
     def update_active_setups(self, df):
@@ -64,6 +64,7 @@ class FVGStrategy:
         self.existing_fvg_times += [fvg.time for fvg in new_fvgs]
         current_low = df['low'].iloc[-1]
         current_high = df['high'].iloc[-1]
+        current_time = df['T'].iloc[-1]
 
         # Filter out old FVGs and mark filled ones
         active_fvgs = []
@@ -77,6 +78,9 @@ class FVGStrategy:
                     # FVG is filled if price goes above the top
                     if current_high > fvg.midpoint:
                         fvg.fill()
+                
+                if current_time - fvg.time > timedelta(minutes=self.fvg_lookback):
+                    fvg.fill()
 
             if not fvg.filled:
                 active_fvgs.append(fvg)
