@@ -32,7 +32,7 @@ class BaseTrader:
         self.last_position_close_time = None
         self.telegram = telegram
 
-        self.htf_lookback = 50
+        self.htf_lookback = 24  # 24 HTF candles = 6 hours of 15-min data
         self.ltf_lookback = 100
 
         if os.path.exists('trades'):
@@ -165,16 +165,23 @@ class BaseTrader:
         ax.tick_params(axis='both', labelsize=6)
         plt.tight_layout()
 
-        if trade_result == "WIN":
-            plt.savefig(f"trades/wins/trade_{len(self.trades)}.png", dpi=400, bbox_inches="tight")
-            plt.close("all")
-            if self.telegram:
-                send_telegram_image(f"trades/wins/trade_{len(self.trades)}.png")
+        # Only save screenshots for first 700 trades to avoid disk space issues
+        if len(self.trades) <= 700:
+            if trade_result == "WIN":
+                plt.savefig(f"trades/wins/trade_{len(self.trades)}.png", dpi=400, bbox_inches="tight")
+                plt.close("all")
+                if self.telegram:
+                    send_telegram_image(f"trades/wins/trade_{len(self.trades)}.png")
+            else:
+                plt.savefig(f"trades/losses/trade_{len(self.trades)}.png", dpi=400, bbox_inches="tight")
+                plt.close("all")
+                if self.telegram:
+                    send_telegram_image(f"trades/losses/trade_{len(self.trades)}.png")
         else:
-            plt.savefig(f"trades/losses/trade_{len(self.trades)}.png", dpi=400, bbox_inches="tight")
+            # Just close the plot without saving for trades after 700
             plt.close("all")
-            if self.telegram:
-                send_telegram_image(f"trades/losses/trade_{len(self.trades)}.png")
+            if len(self.trades) == 701:
+                print("📊 Screenshot saving disabled after 700 trades to save disk space")
 
 
     def process_new_candle(self, ltf_data, htf_data, timestamp):
@@ -289,6 +296,9 @@ class BaseTrader:
 
     def handle_position_open(self, setup, timestamp, ltf_data):
         print("OPEN ORDER BEING CALLED")
+        if setup is None:
+            print("No matching setup found for position - skipping position handling")
+            return None
         position = self.create_open_order(setup, timestamp)
 
         time_since_fvg = int((timestamp - setup['fvg']['time']).total_seconds() / 60)
@@ -384,7 +394,11 @@ class BaseTrader:
         self.current_position = None
         self.last_position_close_time = timestamp
 
-        self.create_candle_chart(candle_data=self.trade_df, trade=self.trades[-1])
+        # Only create chart if we have 700 or fewer trades to save memory
+        if len(self.trades) <= 700:
+            self.create_candle_chart(candle_data=self.trade_df, trade=self.trades[-1])
+        else:
+            print(f"Skipping chart generation for trade {len(self.trades)} (memory optimization: >700 trades)")
         self.trade_df = pd.DataFrame()
 
 
@@ -399,7 +413,7 @@ class LiveBaseTrader(BaseTrader):
 
         super().__init__(symbol, balance, telegram)
 
-        self.risk_amount = 0.3
+        self.risk_amount = 4
         self.strategy = LiveFVGStrategy(self.cancel_order_by_id, self.risk_amount)
 
 
@@ -507,5 +521,9 @@ class LiveBaseTrader(BaseTrader):
         # Reset position
         self.last_position_close_time = timestamp
 
-        self.create_candle_chart(candle_data=self.trade_df, trade=self.trades[-1])
+        # Only create chart if we have 700 or fewer trades to save memory
+        if len(self.trades) <= 700:
+            self.create_candle_chart(candle_data=self.trade_df, trade=self.trades[-1])
+        else:
+            print(f"Skipping chart generation for trade {len(self.trades)} (memory optimization: >700 trades)")
         self.trade_df = pd.DataFrame()
