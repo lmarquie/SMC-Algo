@@ -141,10 +141,43 @@ class LiveTrader(LiveBaseTrader):
                 self.close_all_open_positions()
             elif len(positions) == 1:
                 print(f"Current position: {positions[0]}")
-                position = self.find_matching_position(ccxt_position=positions[0])
-                self.current_position = self.handle_position_open(position, datetime.now(), self.ltf_data)
+                ccxt_pos = positions[0]
+                
+                # Create position object from actual Hyperliquid position
+                position = {
+                    'direction': 'long' if ccxt_pos['side'] == 'long' else 'short',
+                    'entry_price': ccxt_pos['entryPrice'],
+                    'quantity': abs(ccxt_pos['contracts']),
+                    'stop_loss': ccxt_pos['entryPrice'] * 0.98 if ccxt_pos['side'] == 'long' else ccxt_pos['entryPrice'] * 1.02,  # Default 2% stop
+                    'entry_time': datetime.now(),
+                    'fvg': None,
+                    'indicator_type': 'manual',
+                    'indicator_time': datetime.now(),
+                    'larger_trend': 'neutral',
+                    'trend_confidence': 0.1,
+                    'oid': None,
+                    'filled': True,
+                    'entry_fees': 0,
+                    'margin': 0,
+                    'full_exposure': ccxt_pos['entryPrice'] * abs(ccxt_pos['contracts']),
+                }
+                
+                self.current_position = position
+                
+                # Send position notification
+                telegram_text = f"===== POSITION DETECTED =====\n"
+                telegram_text += f"Symbol: {self.symbol}\n"
+                telegram_text += f"Direction: {position['direction']}\n"
+                telegram_text += f"Entry price: ${position['entry_price']:.4f}\n"
+                telegram_text += f"Quantity: {position['quantity']:.4f}\n"
+                telegram_text += f"Full exposure: ${position['full_exposure']:.2f}\n"
+                telegram_text += f"Stop loss: ${position['stop_loss']:.4f}\n"
+                
+                if self.telegram:
+                    send_telegram_message(telegram_text)
+                print(telegram_text)
 
-                # Cancel all open orders, then place a stop loss
+                # Cancel all open orders, then place a REAL stop loss
                 self.cancel_all_open_orders()
                 self.place_stop_loss_order(
                     position_direction=position['direction'],
@@ -217,7 +250,16 @@ class LiveTrader(LiveBaseTrader):
                     'reduceOnly': True
                 }
             )
-            print(result)
+            print(f"✅ STOP LOSS ORDER PLACED: {result}")
+            
+            # Send confirmation to Telegram
+            if self.telegram:
+                telegram_text = f"🛡️ STOP LOSS ORDER PLACED\n"
+                telegram_text += f"Direction: {position_direction}\n"
+                telegram_text += f"Stop Price: ${stop_price:.4f}\n"
+                telegram_text += f"Quantity: {quantity:.4f}\n"
+                telegram_text += f"Order ID: {result.get('id', 'N/A')}\n"
+                send_telegram_message(telegram_text)
         except Exception as e:
             print(f"Error placing stop loss order: {e}")
             self.raise_alarm(f"Error placing stop loss order: {e}")
@@ -244,29 +286,31 @@ class LiveTrader(LiveBaseTrader):
 
 
     def manage_orders(self):
-        if len(self.strategy.active_setups) == 0:
-            return
-        print("Checking for new setups (manage_orders()...")
+        # DISABLED: Strategy order placement - only managing real positions
+        # if len(self.strategy.active_setups) == 0:
+        #     return
+        # print("Checking for new setups (manage_orders()...")
 
-        current_orders = self.dex.fetch_open_orders()
-        current_order_ids = [order['id'] for order in current_orders]
+        # current_orders = self.dex.fetch_open_orders()
+        # current_order_ids = [order['id'] for order in current_orders]
 
-        best_setup = max(self.strategy.active_setups, key=lambda x: x['entry_price'])
-        for setup in self.strategy.active_setups:
-            if setup != best_setup:
-                setup['oid'] = None
+        # best_setup = max(self.strategy.active_setups, key=lambda x: x['entry_price'])
+        # for setup in self.strategy.active_setups:
+        #     if setup != best_setup:
+        #         setup['oid'] = None
 
-        if not best_setup['oid'] in current_order_ids:
-            print(f"Placing new order: {best_setup}")
-            self.place_order(best_setup)
+        # if not best_setup['oid'] in current_order_ids:
+        #     print(f"Placing new order: {best_setup}")
+        #     self.place_order(best_setup)
 
-        updated_orders = self.dex.fetch_open_orders()
-        orders_to_cancel = [order for order in updated_orders if order['id'] != best_setup['oid']]
-        for order in orders_to_cancel:
-            result = self.dex.cancel_order(order['id'], symbol=self.symbol)
-            print(f"Cancelling order: {result}")
-            if result['status'] != 'success':
-                self.raise_alarm(f"Error cancelling order (manage orders): {result}")
+        # updated_orders = self.dex.fetch_open_orders()
+        # orders_to_cancel = [order for order in updated_orders if order['id'] != best_setup['oid']]
+        # for order in orders_to_cancel:
+        #     result = self.dex.cancel_order(order['id'], symbol=self.symbol)
+        #     print(f"Cancelling order: {result}")
+        #     if result['status'] != 'success':
+        #         self.raise_alarm(f"Error cancelling order (manage orders): {result}")
+        pass
 
 
     def cancel_all_open_orders(self):
