@@ -1,17 +1,19 @@
 import pandas as pd
 from typing import Dict, List, Optional
 from trading_logic.structure_analysis import StructureAnalyzer
+from trading_logic.volume_analysis import VolumeAnalyzer
 import logging
 from config import *
 from datetime import datetime, timedelta
 from helpers.telegram_setup import send_telegram_message
 import math
-from config import MIN_FVG_STRENGTH
+from config import MIN_FVG_STRENGTH, ENABLE_VOLUME_VALIDATION, VOLUME_STRENGTH_THRESHOLD
 
 
 class FVGStrategy:
     def __init__(self, risk_amount=0):
         self.analyzer = StructureAnalyzer(min_fvg_strength=MIN_FVG_STRENGTH)
+        self.volume_analyzer = VolumeAnalyzer(lookback_periods=20)
         self.active_fvgs = []
         self.active_setups = []
         self.last_analysis_time = None
@@ -71,33 +73,34 @@ class FVGStrategy:
     def identify_larger_trend(self, htf_df: pd.DataFrame) -> Dict:
         """Identify the larger trend direction and strength"""
         if len(htf_df) < 20:
-            return {'trend': 'neutral', 'strength': 0, 'confidence': 0}
+            return {'trend': 'neutral', 'strength': 0, 'confidence': 0, 'bullish_strength': 0, 'bearish_strength': 0}
 
         htf_analyzed = self.analyzer.analyze_structure(htf_df)
 
         # Count bullish vs bearish structure
         bullish_bos_count = htf_analyzed['bullish_bos'].sum()
         bearish_bos_count = htf_analyzed['bearish_bos'].sum()
-        bullish_mss_count = htf_analyzed['bullish_mss'].sum()
-        bearish_mss_count = htf_analyzed['bearish_mss'].sum()
 
-        # Weighted trend strength: BOS gets 2x weight
-        bullish_strength = 2 * bullish_bos_count + bullish_mss_count
-        bearish_strength = 2 * bearish_bos_count + bearish_mss_count
+        # Use only BOS for trend strength
+        bullish_strength = bullish_bos_count
+        bearish_strength = bearish_bos_count
 
         # Determine trend direction
+        total_strength = bullish_strength + bearish_strength
+        
         if bullish_strength > bearish_strength:
             trend = 'uptrend'
             strength = bullish_strength
-            confidence = bullish_strength / (bullish_strength + bearish_strength)
+            confidence = bullish_strength / total_strength if total_strength > 0 else 0
         elif bearish_strength > bullish_strength:
             trend = 'downtrend'
             strength = bearish_strength
-            confidence = bearish_strength / (bullish_strength + bearish_strength)
-        else:  ### REMOVE NEUTRAL
+            confidence = bearish_strength / total_strength if total_strength > 0 else 0
+        else:  # Equal strengths
             trend = 'neutral'
             strength = max(bullish_strength, bearish_strength)
-            confidence = 0.5
+            # If both strengths are equal and > 0, give some confidence
+            confidence = 0.5 if total_strength > 0 else 0
 
         return {
             'trend': trend,
@@ -116,10 +119,12 @@ class FVGStrategy:
 
         # Step 1: Identify larger trend
         larger_trend = self.identify_larger_trend(htf_df)
+        
 
         # Make trend confidence requirement stricter
         if larger_trend['confidence'] < MIN_LARGER_TREND_CONFIDENCE:
             print(f"⚠️ Trend confidence is too low ({larger_trend['confidence'] * 100:.2f}%) - skipping entry.")
+            print(f"   Trend: {larger_trend['trend']}, Bullish: {larger_trend['bullish_strength']}, Bearish: {larger_trend['bearish_strength']}")
             return None
 
         # Step 3: Look for reversal of the pullback
@@ -127,128 +132,167 @@ class FVGStrategy:
         last_high = df['high'].iloc[-1]
         last_low = df['low'].iloc[-1]
         active_fvgs = self.update_fvgs(df)
+        
 
         if larger_trend['trend'] == 'uptrend':
             self._add_bullish_setups(df, active_fvgs=active_fvgs, last_close=last_close, last_low=last_low, larger_trend=larger_trend)
 
         elif larger_trend['trend'] == 'downtrend':
             self._add_bearish_setups(df, active_fvgs=active_fvgs, last_close=last_close, last_high=last_high, larger_trend=larger_trend)
+            
+        else:  # neutral trend - try both directions
+            self._add_bullish_setups(df, active_fvgs=active_fvgs, last_close=last_close, last_low=last_low, larger_trend=larger_trend)
+            self._add_bearish_setups(df, active_fvgs=active_fvgs, last_close=last_close, last_high=last_high, larger_trend=larger_trend)
 
         return None
 
+    def _validate_breakout_volume(self, df: pd.DataFrame, fvg: Dict, direction: str) -> bool:
+        """Validate volume at the actual breakout moment - filter out LOW volume breakouts"""
+        if len(df) < 5:
+            return False
+        
+        # Check if volume data is available (Binance has it, Hyperliquid doesn't)
+        if 'volume' not in df.columns:
+            print("⚠️ No volume data available - skipping volume validation")
+            return True  # Allow trade if no volume data
+            
+        # Get recent volume data (last 5 candles for breakout analysis)
+        recent_volume = df['volume'].tail(5)
+        current_volume = df['volume'].iloc[-1]
+        avg_volume_20 = df['volume'].tail(20).mean()
+        
+        # Volume threshold - reject if volume is too low
+        volume_threshold = avg_volume_20 * 0.8  # 20% below average
+        volume_above_threshold = current_volume > volume_threshold
+        
+        # Volume momentum (not decreasing too much)
+        volume_trend = current_volume > (recent_volume.iloc[-2] * 0.7)  # Not more than 30% drop
+        
+        # Overall validation: volume must be above threshold AND not dropping too much
+        valid = volume_above_threshold and volume_trend
+        
+        return valid
+
     def _add_bullish_setups(self, df, active_fvgs, last_close, last_low, larger_trend):
         bullish_fvgs = [fvg for fvg in active_fvgs if fvg['type'] == 'bullish']
-
         df_analyzed = self.analyzer.analyze_structure(df)
-        present_bullish_movement = df_analyzed["bullish_bos"].iloc[-1] or df_analyzed["bullish_mss"].iloc[-1]
+        present_bullish_movement = df_analyzed["bullish_bos"].iloc[-1]
 
         if present_bullish_movement or not REQUIRE_SETUP_INDICATORS:
+            # Calculate volume indicators
+            df_with_volume = self.volume_analyzer.calculate_volume_indicators(df)
+            
             for fvg in bullish_fvgs:
                 time_since_fvg = int((df['T'].iloc[-1] - fvg['time']).total_seconds() / 60)
 
                 recent_df = df_analyzed.tail(time_since_fvg)
-                has_bearish_reversal = (
-                        recent_df["bearish_bos"].sum() > 0 or
-                        recent_df["bearish_mss"].sum() > 0
-                )
+                has_bearish_reversal = recent_df["bearish_bos"].sum() > 0
 
                 if last_close > fvg["top"] and not (has_bearish_reversal and REVERSAL_CONSTRAINT_ENABLED):
-                    # Check if setup already exists for this FVG
-                    fvg_already_has_setup = any(
-                        setup['fvg']['time'] == fvg['time'] and setup['direction'] == 'long'
-                        for setup in self.active_setups
-                    )
+                    # Volume validation at BREAKOUT moment (not FVG formation)
+                    if ENABLE_VOLUME_VALIDATION:
+                        volume_passes = self._validate_breakout_volume(df_with_volume, fvg, 'long')
+                        if volume_passes:
+                            print(f"✅ Volume validation passed for bullish FVG breakout")
+                        else:
+                            print(f"❌ Volume validation failed for bullish FVG breakout")
+                    else:
+                        volume_passes = True  # Skip volume validation
+                        print(f"✅ Volume validation disabled - proceeding with bullish FVG")
                     
-                    if not fvg_already_has_setup:
-                        stop_loss = fvg['bottom'] - STOP_LOSS_BUFFER
+                    # Only proceed if volume validation passes (or is disabled)
+                    if volume_passes:
+                        # Check if setup already exists for this FVG
+                        fvg_already_has_setup = any(
+                            setup['fvg']['time'] == fvg['time'] and setup['direction'] == 'long'
+                            for setup in self.active_setups
+                        )
+                        
+                        if not fvg_already_has_setup:
+                            # TEMP SOLUTION
+                            entry_price = (fvg['top'] + fvg['bottom']) / 2
+                            stop_distance = entry_price * MIN_STOP_DISTANCE_COIN
+                            stop_loss = entry_price - stop_distance
+                            quantity = self.risk_amount / stop_distance
 
-                        # Find nearest swing low for structure-based stop
-                        nearest_swing_low = self._find_nearest_swing_low(df_analyzed, last_low)
-                        if nearest_swing_low:
-                            swing_stop = nearest_swing_low - STOP_LOSS_BUFFER
-                            # Use the LOWER of the two stops (FVG-based or structure-based)
-                            stop_loss = min(stop_loss, swing_stop)
+                            existing_entry_prices = [setup['entry_price'] for setup in self.active_setups]
+                            if entry_price in existing_entry_prices:
+                                continue
 
-                        # TEMP SOLUTION
-                        entry_price = (fvg['top'] + fvg['bottom']) / 2
-                        stop_distance = entry_price * MIN_STOP_DISTANCE_COIN
-                        stop_loss = entry_price - stop_distance
-                        quantity = self.risk_amount / stop_distance
-
-                        existing_entry_prices = [setup['entry_price'] for setup in self.active_setups]
-                        if entry_price in existing_entry_prices:
-                            continue
-
-                        self.active_setups.append({
-                            'entry_price': entry_price,
-                            'quantity': quantity,
-                            'direction': 'long',
-                            'stop_loss': stop_loss,
-                            'fvg': fvg,
-                            'indicator_type': 'bos' if df_analyzed["bullish_bos"].iloc[-1] else 'mss',
-                            'indicator_time': df['T'].iloc[-1],
-                            'larger_trend': larger_trend['trend'],
-                            'trend_confidence': larger_trend['confidence'],
-                            'oid': None,
-                            'filled': False
-                        })
+                            self.active_setups.append({
+                                'entry_price': entry_price,
+                                'quantity': quantity,
+                                'direction': 'long',
+                                'stop_loss': stop_loss,
+                                'fvg': fvg,
+                                'indicator_type': 'bos',
+                                'indicator_time': df['T'].iloc[-1],
+                                'larger_trend': larger_trend['trend'],
+                                'trend_confidence': larger_trend['confidence'],
+                                'oid': None,
+                                'filled': False
+                            })
 
 
     def _add_bearish_setups(self, df, active_fvgs, last_close, last_high, larger_trend):
         bearish_fvgs = [fvg for fvg in active_fvgs if fvg['type'] == 'bearish']
         df_analyzed = self.analyzer.analyze_structure(df)
-        present_bearish_movement = df_analyzed["bearish_bos"].iloc[-1] or df_analyzed["bearish_mss"].iloc[-1]
+        present_bearish_movement = df_analyzed["bearish_bos"].iloc[-1]
 
         if present_bearish_movement or not REQUIRE_SETUP_INDICATORS:
+            # Calculate volume indicators
+            df_with_volume = self.volume_analyzer.calculate_volume_indicators(df)
+            
             for fvg in bearish_fvgs:
                 time_since_fvg = int((df['T'].iloc[-1] - fvg['time']).total_seconds() / 60)
 
                 recent_df = df_analyzed.tail(time_since_fvg)
-                has_bullish_reversal = (
-                        recent_df["bullish_bos"].sum() > 0 or
-                        recent_df["bullish_mss"].sum() > 0
-                )
+                has_bullish_reversal = recent_df["bullish_bos"].sum() > 0
 
                 if last_close < fvg["bottom"] and not (has_bullish_reversal and REVERSAL_CONSTRAINT_ENABLED):
-                    # Check if setup already exists for this FVG
-                    fvg_already_has_setup = any(
-                        setup['fvg']['time'] == fvg['time'] and setup['direction'] == 'short'
-                        for setup in self.active_setups
-                    )
+                    # Volume validation at BREAKOUT moment (not FVG formation)
+                    if ENABLE_VOLUME_VALIDATION:
+                        volume_passes = self._validate_breakout_volume(df_with_volume, fvg, 'short')
+                        if volume_passes:
+                            print(f"✅ Volume validation passed for bearish FVG breakout")
+                        else:
+                            print(f"❌ Volume validation failed for bearish FVG breakout")
+                    else:
+                        volume_passes = True  # Skip volume validation
+                        print(f"✅ Volume validation disabled - proceeding with bearish FVG")
                     
-                    if not fvg_already_has_setup:
-                        stop_loss = fvg['top'] + STOP_LOSS_BUFFER
+                    # Only proceed if volume validation passes (or is disabled)
+                    if volume_passes:
+                        # Check if setup already exists for this FVG
+                        fvg_already_has_setup = any(
+                            setup['fvg']['time'] == fvg['time'] and setup['direction'] == 'short'
+                            for setup in self.active_setups
+                        )
+                        
+                        if not fvg_already_has_setup:
+                            # TEMP SOLUTION
+                            entry_price = (fvg['top'] + fvg['bottom']) / 2
+                            stop_distance = entry_price * MIN_STOP_DISTANCE_COIN
+                            stop_loss = entry_price + stop_distance
+                            quantity = self.risk_amount / stop_distance
 
-                        # Find nearest swing high for structure-based stop
-                        nearest_swing_high = self._find_nearest_swing_high(df_analyzed, last_high)
-                        if nearest_swing_high:
-                            swing_stop = nearest_swing_high + STOP_LOSS_BUFFER
-                            # Use the HIGHER of the two stops (FVG-based or structure-based)
-                            stop_loss = max(stop_loss, swing_stop)
+                            existing_entry_prices = [setup['entry_price'] for setup in self.active_setups]
+                            if entry_price in existing_entry_prices:
+                                continue
 
-                        # TEMP SOLUTION
-                        entry_price = (fvg['top'] + fvg['bottom']) / 2
-                        stop_distance = entry_price * MIN_STOP_DISTANCE_COIN
-                        stop_loss = entry_price + stop_distance
-                        quantity = self.risk_amount / stop_distance
-
-                        existing_entry_prices = [setup['entry_price'] for setup in self.active_setups]
-                        if entry_price in existing_entry_prices:
-                            continue
-
-                        self.active_setups.append({
-                            'entry_price': entry_price,
-                            'quantity': quantity,
-                            'direction': 'short',
-                            'stop_loss': stop_loss,
-                            'fvg': fvg,
-                            'indicator_time': df['T'].iloc[-1],
-                            'indicator_type': 'bos' if df_analyzed["bearish_bos"].iloc[-1] else 'mss',
-                            'larger_trend': larger_trend['trend'],
-                            'trend_confidence': larger_trend['confidence'],
-                            'oid': None,
-                            'filled': False,
-                        })
+                            self.active_setups.append({
+                                'entry_price': entry_price,
+                                'quantity': quantity,
+                                'direction': 'short',
+                                'stop_loss': stop_loss,
+                                'fvg': fvg,
+                                'indicator_time': df['T'].iloc[-1],
+                                'indicator_type': 'bos',
+                                'larger_trend': larger_trend['trend'],
+                                'trend_confidence': larger_trend['confidence'],
+                                'oid': None,
+                                'filled': False,
+                            })
 
 
     def update_position(self, position: Dict, current_price: float):
@@ -353,9 +397,10 @@ class FVGStrategy:
             if not swing_lows.empty:
                 # Find the HIGHEST swing low (most favorable for longs)
                 best_swing_low = swing_lows['swing_low'].max()
-                # Tighter stop distance - closer to swing low for faster trailing
+                # Stop should be BELOW swing low for longs (subtract buffer)
                 new_stop = best_swing_low - STOP_LOSS_BUFFER
                 # Only move stop up (more favorable) - NEVER move down for longs
+                # For longs: new_stop should be HIGHER than current stop (closer to entry)
                 if new_stop > position['stop_loss'] and abs(new_stop - current_price) > MIN_STOP_DISTANCE_COIN:
                     old_stop = position['stop_loss']
                     position['stop_loss'] = new_stop
@@ -369,7 +414,7 @@ class FVGStrategy:
 
                         unrealized_pnl = (position['stop_loss'] - position['entry_price']) * position['quantity'] - position['entry_fees']
 
-                        telegram_message += f"Stop loss: ${old_stop:.4f} → ${position['stop_loss']:.4f} (swing high: ${best_swing_low:.4f}\n"
+                        telegram_message += f"Stop loss: ${old_stop:.4f} → ${position['stop_loss']:.4f} (swing low: ${best_swing_low:.4f}\n"
                         telegram_message += f"Unrealized P&L: ${unrealized_pnl:.4f} ({(unrealized_pnl / self.risk_amount) * 100}%)\n"
 
                         send_telegram_message(telegram_message)
