@@ -200,7 +200,7 @@ class StructureAnalyzer:
                         'filled': False
                     }
                     if fvg['strength'] >= closes[i] * self.min_fvg_strength:
-                        fvgs.append(fvg)
+                        fvgs.append(fvg) 
 
         return fvgs
 
