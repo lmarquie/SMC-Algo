@@ -136,7 +136,7 @@ class BaseTrader:
             elif candle['T'] == trade['fvg']['time']:
                 boxprops = {'facecolor': 'orange', 'alpha': 1}
             elif candle['T'] == trade['indicator_time']:
-                color = 'yellow' if trade['indicator_type'] == 'mss' else 'blue'
+                color = 'blue'  # All entries now use BOS
                 boxprops = {'facecolor': color, 'alpha': 1}
             elif candle['T'] > entry_time and candle['T'] < exit_time:
                 if candle["close"] >= candle["open"]:
