@@ -286,31 +286,26 @@ class LiveTrader(LiveBaseTrader):
 
 
     def manage_orders(self):
-        # DISABLED: Strategy order placement - only managing real positions
-        # if len(self.strategy.active_setups) == 0:
-        #     return
-        # print("Checking for new setups (manage_orders()...")
+        if len(self.strategy.active_setups) == 0:
+            return
 
-        # current_orders = self.dex.fetch_open_orders()
-        # current_order_ids = [order['id'] for order in current_orders]
+        current_orders = self.dex.fetch_open_orders()
+        current_order_ids = [order['id'] for order in current_orders]
 
-        # best_setup = max(self.strategy.active_setups, key=lambda x: x['entry_price'])
-        # for setup in self.strategy.active_setups:
-        #     if setup != best_setup:
-        #         setup['oid'] = None
+        best_setup = max(self.strategy.active_setups, key=lambda x: x['entry_price'])
+        for setup in self.strategy.active_setups:
+            if setup != best_setup:
+                setup['oid'] = None
 
-        # if not best_setup['oid'] in current_order_ids:
-        #     print(f"Placing new order: {best_setup}")
-        #     self.place_order(best_setup)
+        if not best_setup['oid'] in current_order_ids:
+            self.place_order(best_setup)
 
-        # updated_orders = self.dex.fetch_open_orders()
-        # orders_to_cancel = [order for order in updated_orders if order['id'] != best_setup['oid']]
-        # for order in orders_to_cancel:
-        #     result = self.dex.cancel_order(order['id'], symbol=self.symbol)
-        #     print(f"Cancelling order: {result}")
-        #     if result['status'] != 'success':
-        #         self.raise_alarm(f"Error cancelling order (manage orders): {result}")
-        pass
+        updated_orders = self.dex.fetch_open_orders()
+        orders_to_cancel = [order for order in updated_orders if order['id'] != best_setup['oid']]
+        for order in orders_to_cancel:
+            result = self.dex.cancel_order(order['id'], symbol=self.symbol)
+            if result['status'] != 'success':
+                self.raise_alarm(f"Error cancelling order (manage orders): {result}")
 
 
     def cancel_all_open_orders(self):
@@ -429,7 +424,6 @@ class LiveTrader(LiveBaseTrader):
                 if self.current_position:
                     self.manage_position_stops()
                 else:
-                    print("managing orders...")
                     self.manage_orders()
 
                 if not self.current_position and old_position:
