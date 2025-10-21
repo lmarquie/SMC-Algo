@@ -144,11 +144,23 @@ class LiveTrader(LiveBaseTrader):
                 ccxt_pos = positions[0]
                 
                 # Create position object from actual Hyperliquid position
+                # Calculate stop loss based on fixed risk amount, not percentage
+                entry_price = ccxt_pos['entryPrice']
+                quantity = abs(ccxt_pos['contracts'])
+                
+                # Calculate stop distance based on fixed risk amount
+                stop_distance = self.risk_amount / quantity
+                
+                if ccxt_pos['side'] == 'long':
+                    stop_loss = entry_price - stop_distance
+                else:  # short
+                    stop_loss = entry_price + stop_distance
+                
                 position = {
                     'direction': 'long' if ccxt_pos['side'] == 'long' else 'short',
-                    'entry_price': ccxt_pos['entryPrice'],
-                    'quantity': abs(ccxt_pos['contracts']),
-                    'stop_loss': ccxt_pos['entryPrice'] * 0.98 if ccxt_pos['side'] == 'long' else ccxt_pos['entryPrice'] * 1.02,  # Default 2% stop
+                    'entry_price': entry_price,
+                    'quantity': quantity,
+                    'stop_loss': stop_loss,
                     'entry_time': datetime.now(),
                     'fvg': None,
                     'indicator_type': 'manual',
@@ -159,7 +171,7 @@ class LiveTrader(LiveBaseTrader):
                     'filled': True,
                     'entry_fees': 0,
                     'margin': 0,
-                    'full_exposure': ccxt_pos['entryPrice'] * abs(ccxt_pos['contracts']),
+                    'full_exposure': entry_price * quantity,
                 }
                 
                 self.current_position = position
