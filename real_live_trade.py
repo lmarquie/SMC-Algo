@@ -144,12 +144,12 @@ class LiveTrader(LiveBaseTrader):
                 ccxt_pos = positions[0]
                 
                 # Create position object from actual Hyperliquid position
-                # Calculate stop loss based on fixed risk amount, not percentage
+                # Use the SAME stop loss calculation as the strategy
                 entry_price = ccxt_pos['entryPrice']
                 quantity = abs(ccxt_pos['contracts'])
                 
-                # Calculate stop distance based on fixed risk amount
-                stop_distance = self.risk_amount / quantity
+                # Strategy logic: stop distance = 0.15% of entry price (not risk-based)
+                stop_distance = entry_price * MIN_STOP_DISTANCE_COIN
                 
                 if ccxt_pos['side'] == 'long':
                     stop_loss = entry_price - stop_distance
