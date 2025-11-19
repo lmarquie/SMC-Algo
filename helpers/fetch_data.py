@@ -1,11 +1,10 @@
 import json
 import pandas as pd
-from helpers.hyperliquid_client import HyperliquidClient
 import ccxt
 from datetime import datetime
 from credentials import HYPERLIQUID_ACCOUNT_ADDRESS, HYPERLIQUID_API_KEY
 
-async def fetch_binance_data(symbol):
+def fetch_binance_data(symbol):
     with open(f'recent_{symbol.lower()}.json', 'r') as f:
         aggs_list = json.load(f)
 
@@ -27,7 +26,7 @@ async def fetch_binance_data(symbol):
     return df
 
 
-async def fetch_hyperliquid_data(symbol):
+def fetch_hyperliquid_data(symbol):
     # Fetch exactly 5000 candles
     target_candles = 5000
 

@@ -1,7 +1,9 @@
+from models.fvg import FVG
+
 class Setup:
     def __init__(
             self, entry_price, quantity, direction, stop_loss, 
-            fvg, indicator_type, indicator_time, larger_trend,
+            fvg: FVG, indicator_type, indicator_time, larger_trend,
             trend_confidence,
         ):
         self.entry_price = entry_price
@@ -18,6 +20,3 @@ class Setup:
 
         self.long = (direction == 'long')
         self.short = (direction == 'short')
-
-    def place_order():
-        pass

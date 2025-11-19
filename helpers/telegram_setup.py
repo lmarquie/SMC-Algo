@@ -66,8 +66,3 @@ def send_telegram_image(filepath, caption=None, disable_notification=False):
         return resp.json()
     except Exception as e:
         return {"ok": False, "error": str(e)}
-
-
-
-
-

@@ -19,11 +19,13 @@ class StructureAnalyzer:
         for i in range(2, len(highs) - 2):
             if (highs[i] > highs[i - 1]
                     and highs[i] > highs[i - 2]
+                    and highs[i] > highs[i - 1]
                     and highs[i] > highs[i + 1]
                     and highs[i] > highs[i + 2]):
                 swing_highs[i] = highs[i]
             if (lows[i] < lows[i - 1]
                     and lows[i] < lows[i - 2]
+                    and lows[i] < lows[i - 1]
                     and lows[i] < lows[i + 1]
                     and lows[i] < lows[i + 2]):
                 swing_lows[i] = lows[i]
@@ -198,7 +200,6 @@ class StructureAnalyzer:
 
     def analyze_structure(self, df: pd.DataFrame) -> pd.DataFrame:
         """Complete structure analysis combining all methods"""
-        df = df.copy()
         highs = df["high"].to_numpy()
         lows = df["low"].to_numpy()
         opens = df["open"].to_numpy()
@@ -209,13 +210,13 @@ class StructureAnalyzer:
         bullish_bos, bearish_bos = self.detect_bos(closes, swing_highs, swing_lows)
         bullish_mss, bearish_mss = self.detect_mss(swing_highs, swing_lows)
 
-        df["swing_high"] = swing_highs
-        df["swing_high"] = swing_highs
-        df["swing_low"] = swing_lows
-        df["bullish_bos"] = bullish_bos
-        df["bearish_bos"] = bearish_bos
-        df["bullish_mss"] = bullish_mss
-        df["bearish_mss"] = bearish_mss
+        df.loc[:,"swing_high"] = swing_highs
+        df.loc[:,"swing_high"] = swing_highs
+        df.loc[:,"swing_low"] = swing_lows
+        df.loc[:,"bullish_bos"] = bullish_bos
+        df.loc[:,"bearish_bos"] = bearish_bos
+        df.loc[:,"bullish_mss"] = bullish_mss
+        df.loc[:,"bearish_mss"] = bearish_mss
 
         return df
 

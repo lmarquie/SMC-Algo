@@ -3,29 +3,47 @@ from helpers.telegram_setup import send_telegram_image
 from config import *
 import pandas as pd
 import numpy as np
+from models.fvg import FVG
 
 class Position:
-    def __init__(self, symbol, risk_amount, stop_distance, entry_time, direction, trade_df, fvg, indicator_type, indicator_time, larger_trend, trend_confidence):
+    def __init__(
+            self,
+            symbol,
+            risk_amount,
+            initial_stop_loss,
+            entry_time,
+            side, # long or short
+            trade_df,
+            fvg: FVG,
+            indicator_type,
+            indicator_time,
+            larger_trend,
+            trend_confidence
+        ):
+
+        if (fvg.time - entry_time).total_seconds() / 60 > MAX_INDICATOR_ENTRY_DIST + MAX_INDICATOR_ENTRY_DIST:
+            raise ValueError("(position) FVG too early: aborting program")
+
         self.symbol = symbol
         self.entry_time = entry_time
-        self.direction = direction
+        self.side = side
         self.fvg = fvg
+        self.fvg_idx = len(trade_df) - 1 - int((entry_time - fvg.time).total_seconds() / 60)
+        if self.fvg_idx < 0:
+            raise ValueError("(position) FVG too early: aborting program")
         self.indicator_type = indicator_type
         self.indicator_time = indicator_time
         self.larger_trend = larger_trend
         self.trend_confidence = trend_confidence
         self.trade_df = trade_df
 
-        self.long = direction == 'long'
-        self.short = direction == 'short'
+        self.long = side == 'long'
+        self.short = side == 'short'
         self.entry_price = fvg.midpoint
 
-        if self.long:
-            stop_loss = self.entry_price - stop_distance
-        else: # short
-            stop_loss = self.entry_price + stop_distance
+        self.initial_stop_loss = initial_stop_loss
+        stop_distance = abs(self.entry_price - initial_stop_loss)
 
-        self.stop_loss = stop_loss
         self.trade_df = trade_df
         self.quantity = risk_amount / stop_distance
         self.full_exposure = self.entry_price * self.quantity
@@ -35,12 +53,15 @@ class Position:
         self.mss = indicator_type == 'mss'
         self.bos = indicator_type == 'bos'
 
-        self.setup_volumes = {}
-        self.stop_losses = []
+        self.stop_losses = [{
+            "swing_idx": 0,
+            "placement_idx": 0,
+            "value": initial_stop_loss
+        }]
 
 
     def create_candle_chart(self, exit_time, pnl_dollar, id, telegram):
-
+        print("(create_candle_chart) Creating candle chart for trade")
         plt.figure(figsize=(18, 6))
         plt.margins(x=0.1)
         plt.margins(y=0.1)
@@ -56,12 +77,12 @@ class Position:
                 boxprops = {'facecolor': 'green', 'alpha': 1}
             elif idx == len(self.trade_df) - 1:
                 boxprops = {'facecolor': 'red', 'alpha': 1}
-            elif candle['T'] == self.fvg.time:
+            elif idx == self.fvg_idx:
                 boxprops = {'facecolor': 'orange', 'alpha': 1}
             elif candle['T'] == self.indicator_time:
                 color = 'yellow' if self.mss else 'blue'
                 boxprops = {'facecolor': color, 'alpha': 1}
-            elif candle['T'] > self.entry_time and candle['T'] < exit_time:
+            elif self.entry_time < candle['T'] < exit_time:
                 if candle["close"] >= candle["open"]:
                     boxprops = {'facecolor': 'green', 'alpha': 0.4}
                 else:
@@ -89,16 +110,9 @@ class Position:
             plt.scatter(placement_point, value, s=5, color='black', marker='o')
 
         ax.set_xticks([])
-        trade_direction = self.direction.upper()
+        trade_direction = self.side.upper()
         trade_result = "WIN" if pnl_dollar > 0 else "LOSS"
         fig.suptitle(f"Trade #{self.entry_time}: {trade_direction} - {trade_result} (${pnl_dollar:.2f})")
-
-        vol_subtitle = ""
-        for lookback, total_volume in self.setup_volumes.items():
-            vol_subtitle += f"{lookback} min volume: {total_volume:.4f}.    "
-        ax.set_title(vol_subtitle, fontsize=12, color="gray")
-        
-
 
         ax.tick_params(axis='both', labelsize=6)
         plt.tight_layout()
@@ -115,10 +129,27 @@ class Position:
                 send_telegram_image(f"trades/losses/trade_{id}.png")
 
     def add_candle(self, candle):
-        self.trade_df = pd.concat([self.trade_df, candle], ignore_index=True)
-
-    def add_setup_volume(self, lookback, total_volume):
-        self.setup_volumes[f'volume_{lookback}'] = total_volume
+        self.trade_df.loc[len(self.trade_df)] = candle
 
     def get_idx(self):
         return len(self.trade_df) - 1
+
+    def add_stop_loss(self, swing_idx, placement_idx, value):
+        self.stop_losses.append({
+            "swing_idx": swing_idx,
+            "placement_idx": placement_idx,
+            "value": value
+        })
+
+    def calculate_pnl(self, price: float):
+        if self.side == 'long':
+            return (price - self.entry_price) * self.quantity
+        else:
+            return (self.entry_price - price) * self.quantity
+
+    # returns scalar value for the last stop loss placed
+    def get_last_stop(self):
+        if len(self.stop_losses) > 0:
+            return self.stop_losses[-1]['value']
+        else:
+            return -1
