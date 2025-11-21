@@ -12,7 +12,7 @@ async def run_real_data_backtest(symbol, method):
     """Run the real data backtest for all 3 cryptocurrencies"""
     if method == "binance":
         data = await fetch_binance_data(symbol)
-        data = data.iloc[:200_000]
+        data = data.iloc[:700_000]
     elif method == "hyperliquid":
         data = await fetch_hyperliquid_data(symbol)
 

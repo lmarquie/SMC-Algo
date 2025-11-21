@@ -1,6 +1,6 @@
 from config import *
 from typing import Dict
-from trading_logic.trading_strategy import FVGStrategy
+from trading_logic.trading_strategy import FVGStrategy, LiveFVGStrategy
 import numpy as np
 from helpers.telegram_setup import send_telegram_message
 import pandas as pd
@@ -11,7 +11,6 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import ccxt
 from credentials import *
-from models.position import Position
 
 
 class BaseTrader:
@@ -27,12 +26,13 @@ class BaseTrader:
 
         self.symbol = symbol
         self.trades = []
+        self.trade_df = pd.DataFrame()
         self.current_position = None
         self.current_balance = balance
         self.last_position_close_time = None
         self.telegram = telegram
 
-        self.htf_lookback = 50
+        self.htf_lookback = 24  # 24 HTF candles = 6 hours of 15-min data
         self.ltf_lookback = 100
 
         if os.path.exists('trades'):
@@ -115,50 +115,130 @@ class BaseTrader:
             send_telegram_message(final_message)
 
 
-    # EFFECTS: updates trailing stop if in position,
-    #          adds setups and updates setups/fvgs each iteration
+    def create_candle_chart(self, candle_data, trade):
+        entry_time = trade['entry_time']
+        exit_time = trade['exit_time']
+
+        plt.figure(figsize=(18, 6))
+        plt.margins(x=0.1)
+        plt.tight_layout()
+        fig, ax = plt.subplots()
+        print(f"Trade {len(self.trades)}, entry {entry_time}, fvg index {trade['fvg']['time']}")
+
+        for idx in range(0, len(candle_data)):
+            candle = candle_data.iloc[idx]
+            boxplot_data = [[candle["low"], candle["open"], candle["close"], candle["high"]]]
+
+            if candle['T'] == entry_time:
+                boxprops = {'facecolor': 'green', 'alpha': 1}
+            elif idx == len(candle_data) - 1:
+                boxprops = {'facecolor': 'red', 'alpha': 1}
+            elif candle['T'] == trade['fvg']['time']:
+                boxprops = {'facecolor': 'orange', 'alpha': 1}
+            elif candle['T'] == trade['indicator_time']:
+                color = 'yellow' if trade['indicator_type'] == 'mss' else 'blue'
+                boxprops = {'facecolor': color, 'alpha': 1}
+            elif candle['T'] > entry_time and candle['T'] < exit_time:
+                if candle["close"] >= candle["open"]:
+                    boxprops = {'facecolor': 'green', 'alpha': 0.4}
+                else:
+                    boxprops = {'facecolor': 'red', 'alpha': 0.4}
+            else:
+                boxprops = {'facecolor': 'white', 'alpha': 1.0}
+
+            ax.boxplot(
+                boxplot_data,
+                positions=[(idx + 1) * 3],
+                widths=2,
+                showfliers=False,
+                manage_ticks=True,
+                medianprops={'linewidth': 0},
+                boxprops=boxprops,
+                patch_artist=True,
+            )
+
+        ax.set_xticks([])
+        trade_direction = trade['direction'].upper()
+        trade_result = "WIN" if trade['pnl_dollar'] > 0 else "LOSS"
+        plt.title(f"Trade #{entry_time}: {trade_direction} - {trade_result} (${trade['pnl_dollar']:.2f})")
+
+        ax.tick_params(axis='both', labelsize=6)
+        plt.tight_layout()
+
+        # Only save screenshots for first 700 trades to avoid disk space issues
+        if len(self.trades) <= 700:
+            if trade_result == "WIN":
+                plt.savefig(f"trades/wins/trade_{len(self.trades)}.png", dpi=400, bbox_inches="tight")
+                plt.close("all")
+                if self.telegram:
+                    send_telegram_image(f"trades/wins/trade_{len(self.trades)}.png")
+            else:
+                plt.savefig(f"trades/losses/trade_{len(self.trades)}.png", dpi=400, bbox_inches="tight")
+                plt.close("all")
+                if self.telegram:
+                    send_telegram_image(f"trades/losses/trade_{len(self.trades)}.png")
+        else:
+            # Just close the plot without saving for trades after 700
+            plt.close("all")
+            if len(self.trades) == 701:
+                print("📊 Screenshot saving disabled after 700 trades to save disk space")
+
+
     def process_new_candle(self, ltf_data, htf_data, timestamp):
         print(f"Running iteration: time {timestamp}, balance: ${self.current_balance:.2f}")
         if self.current_position:
             print("In position currently")
-            print(self.current_position.trade_df)
-            self.current_position.trade_df = pd.concat([self.current_position.trade_df, ltf_data.tail(1)], ignore_index=True)
+            print(self.trade_df)
+            self.trade_df = pd.concat([self.trade_df, ltf_data.tail(1)], ignore_index=True)
             current_price = ltf_data['close'].iloc[-1]
-            self.strategy.update_trailing_stop(current_price=current_price, position=self.current_position, telegram=self.telegram)
-        else:
-            self.strategy.check_entry_conditions(ltf_data, htf_data)
-            self.strategy.update_active_setups(ltf_data)
-        
+            self.strategy.update_trailing_stop(current_price=current_price, df=ltf_data, position=self.current_position, telegram=self.telegram)
+            # Only in non live-version, otherwise training stop handled in real_live_trade.py
+            return
+
+        self.strategy.check_entry_conditions(ltf_data, htf_data)
+        self.strategy.update_active_setups(ltf_data)
 
 
-    def create_open_order(self, setup, trade_df, timestamp):
+    def create_open_order(self, setup, timestamp):
         risk_amount = self.risk_amount
         min_dist_percent = MIN_STOP_DISTANCE_COIN  # Use the config value
 
-        entry_price = setup.fvg.midpoint
-        original_stop_distance = abs(entry_price - setup.stop_loss)
+        entry_price = (setup['fvg']['top'] + setup['fvg']['bottom']) / 2
+        original_stop_distance = abs(entry_price - setup['stop_loss'])
         min_stop_distance = entry_price * min_dist_percent
         
         # Enforce the minimum stop distance
         if original_stop_distance < min_stop_distance:
             print(f"MINIMUM STOP DISTANCE ENFORCED: {original_stop_distance:.4f} → {min_stop_distance:.4f}")
             stop_distance = min_stop_distance
+            
+            # Recalculate stop loss based on new distance
+            if setup['direction'] == 'long':
+                stop_loss = entry_price - stop_distance
+            else:  # short
+                stop_loss = entry_price + stop_distance
         else:
             stop_distance = original_stop_distance
+            stop_loss = setup['stop_loss']
 
-        position = Position(
-            symbol=self.symbol,
-            risk_amount=risk_amount,
-            stop_distance=stop_distance,
-            entry_time=timestamp,
-            direction=setup.direction,
-            trade_df=trade_df,
-            fvg=setup.fvg,
-            indicator_type=setup.indicator_type,
-            indicator_time=setup.indicator_time,
-            larger_trend=setup.larger_trend,
-            trend_confidence=setup.trend_confidence,
-        )
+        quantity = risk_amount / stop_distance
+        full_exposure = entry_price * quantity
+        margin = full_exposure / MAX_LEVERAGE[self.symbol]
+        entry_fees = full_exposure * 0.00015
+
+        position = {
+            'direction': setup['direction'],
+            'entry_price': entry_price,
+            'stop_loss': stop_loss,
+            'quantity': quantity,
+            'fvg': setup['fvg'],
+            'indicator_time': setup['indicator_time'],
+            'indicator_type': setup['indicator_type'],
+            'entry_time': timestamp,
+            'entry_fees': entry_fees,
+            'margin': margin,
+            'full_exposure': full_exposure,
+        }
 
         return position
 
@@ -166,25 +246,25 @@ class BaseTrader:
     def check_position_opened(self, current_high, current_low):
         sorted_setups = sorted(
             self.strategy.active_setups,
-            key = lambda setup: setup.fvg.top,
+            key = lambda setup: setup['fvg']['top'],
             reverse=True,
         )
 
-        sorted_setups = [setup for setup in sorted_setups if not setup.fvg.filled]
+        sorted_setups = [setup for setup in sorted_setups if not setup['fvg']['filled']]
 
         for setup in sorted_setups:
-            fvg_midpoint = setup.fvg.midpoint
+            fvg_midpoint = (setup['fvg']['top'] + setup['fvg']['bottom']) / 2
             if current_high >= fvg_midpoint >= current_low:
                 return setup
         return None
 
 
-    def check_position_closed(self, current_high, current_low):
-        if self.current_position.long:
-            if current_low <= self.current_position.stop_loss:
+    def check_position_closed(self, current_price):
+        if self.current_position['direction'] == 'long':
+            if current_price <= self.current_position['stop_loss']:
                 return True
-        elif self.current_position.short:
-            if current_high >= self.current_position.stop_loss:
+        elif self.current_position['direction'] == 'short':
+            if current_price >= self.current_position['stop_loss']:
                 return True
 
         return False
@@ -192,14 +272,14 @@ class BaseTrader:
 
     def handle_positions(self, ltf_data, current_price, current_open=None, current_high=None, current_low=None, current_time=None, trade_config="backtest"):
         if not self.current_position:
-            setup = self.check_position_opened(current_high, current_low)
-            if setup:
+            position = self.check_position_opened(current_high, current_low)
+            if position:
                 print("POSITION FOUND")
                 if self.telegram:
                     send_telegram_message(f"New position found at {current_time}")
-                self.current_position = self.handle_position_open(setup, current_time, ltf_data)
+                self.current_position = self.handle_position_open(position, current_time, ltf_data)
         else:
-            if self.check_position_closed(current_high, current_low):
+            if self.check_position_closed(current_price):
                 if trade_config == "livetest":
                     last_candle = [{
                         'T': current_time,
@@ -209,18 +289,20 @@ class BaseTrader:
                         'close': current_price,
                     }]
                     last_candle = pd.DataFrame(last_candle)
-                    self.current_position.trade_df  = pd.concat([self.current_position.trade_df, last_candle], ignore_index=True)
+                    self.trade_df  = pd.concat([self.trade_df, last_candle], ignore_index=True)
 
                 self.handle_position_close(current_time)
 
 
     def handle_position_open(self, setup, timestamp, ltf_data):
         print("OPEN ORDER BEING CALLED")
-        time_since_fvg = int((timestamp - setup.fvg.time).total_seconds() / 60)
+        if setup is None:
+            print("No matching setup found for position - skipping position handling")
+            return None
+        position = self.create_open_order(setup, timestamp)
 
-        trade_df = ltf_data.tail(time_since_fvg + 20).reset_index(drop=True)
-
-        position = self.create_open_order(setup, trade_df, timestamp)
+        time_since_fvg = int((timestamp - setup['fvg']['time']).total_seconds() / 60)
+        self.trade_df = ltf_data.tail(time_since_fvg + 20).reset_index(drop=True)
 
         telegram_text = ""
         if self.symbol:
@@ -228,14 +310,14 @@ class BaseTrader:
         else:
             telegram_text += "===== New Position Opened =====\n"
         telegram_text += f"Symbol: {self.symbol if self.symbol else 'N/A'}\n"
-        telegram_text += f"Direction: {position.direction}\n"
-        telegram_text += f"Entry price: ${position.entry_price:.4f}\n"
-        telegram_text += f"Stop loss: ${position.stop_loss:.4f}\n"
-        telegram_text += f"Position quantity: {position.quantity:.4f}\n"
+        telegram_text += f"Direction: {position['direction']}\n"
+        telegram_text += f"Entry price: ${position['entry_price']:.4f}\n"
+        telegram_text += f"Stop loss: ${position['stop_loss']:.4f}\n"
+        telegram_text += f"Position quantity: {position['quantity']:.4f}\n"
 
-        telegram_text += f"Full exposure: ${position.full_exposure:.2f}\n"
-        telegram_text += f"Margin required: ${position.margin:.2f}\n"
-        telegram_text += f"Entry Fees: ${position.entry_fees:.2f}\n"
+        telegram_text += f"Full exposure: ${position['full_exposure']:.2f}\n"
+        telegram_text += f"Margin required: ${position['margin']:.2f}\n"
+        telegram_text += f"Entry Fees: ${position['entry_fees']:.2f}\n"
 
         if self.telegram:
             send_telegram_message(telegram_text)
@@ -247,24 +329,24 @@ class BaseTrader:
 
     def handle_position_close(self, timestamp):
         # Calculate dollar P&L
-        exit_price = self.current_position.stop_loss
-        price_diff = abs(exit_price - self.current_position.entry_price)
-        pnl_dollar = self.current_position.quantity * price_diff
+        exit_price = self.current_position['stop_loss']
+        price_diff = abs(exit_price - self.current_position['entry_price'])
+        pnl_dollar = self.current_position['quantity'] * price_diff
 
-        if self.current_position.long and exit_price < self.current_position.entry_price:
+        if self.current_position['direction'] == 'long' and exit_price < self.current_position['entry_price']:
             pnl_dollar *= -1
-        elif self.current_position.short and exit_price > self.current_position.entry_price:
+        elif self.current_position['direction'] == 'short' and exit_price > self.current_position['entry_price']:
             pnl_dollar *= -1
 
-        final_exposure = exit_price * self.current_position.quantity
+        final_exposure = exit_price * self.current_position['quantity']
         exit_fees = final_exposure * 0.00015
-        total_fees = self.current_position.entry_fees + exit_fees
+        total_fees = self.current_position['entry_fees'] + exit_fees
         pnl_dollar -= total_fees
 
 
         # Debug P&L calculation
-        print(f"P&L Debug: Entry: ${self.current_position.entry_price:.4f}, Exit: ${exit_price:.4f}")
-        print(f"P&L Debug: Price diff: ${price_diff:.4f}, Position size: {self.current_position.quantity:.4f}")
+        print(f"P&L Debug: Entry: ${self.current_position['entry_price']:.4f}, Exit: ${exit_price:.4f}")
+        print(f"P&L Debug: Price diff: ${price_diff:.4f}, Position size: {self.current_position['quantity']:.4f}")
         print(f"P&L Debug: Raw P&L: ${pnl_dollar:.2f}")
 
         # Update balance
@@ -272,19 +354,19 @@ class BaseTrader:
 
         # Record trade
         trade = {
-            'entry_time': self.current_position.entry_time,
+            'entry_time': self.current_position['entry_time'],
             'exit_time': timestamp,
-            'direction': self.current_position.direction,
-            'entry_price': self.current_position.entry_price,
+            'direction': self.current_position['direction'],
+            'entry_price': self.current_position['entry_price'],
             'exit_price': exit_price,
-            'entry_fees': self.current_position.entry_fees,
+            'entry_fees': self.current_position['entry_fees'],
             'exit_fees': exit_fees,
-            'margin': self.current_position.margin,
+            'margin': self.current_position['margin'],
             'total_fees': total_fees,
-            'quantity': self.current_position.quantity,
-            'indicator_time': self.current_position.indicator_time,
-            'indicator_type': self.current_position.indicator_type,
-            'fvg': self.current_position.fvg,
+            'quantity': self.current_position['quantity'],
+            'indicator_time': self.current_position['indicator_time'],
+            'indicator_type': self.current_position['indicator_type'],
+            'fvg': self.current_position['fvg'],
             'pnl_dollar': pnl_dollar,
         }
         self.trades.append(trade)
@@ -296,7 +378,7 @@ class BaseTrader:
         else:
             telegram_text += "===== Position Closed =====\n"
         telegram_text += f"Symbol: {self.symbol if self.symbol else 'N/A'}\n"
-        telegram_text += f"Direction: {self.current_position.direction}\n"
+        telegram_text += f"Direction: {self.current_position['direction']}\n"
         telegram_text += f"Exit price: ${trade['exit_price']:.4f}\n"
         telegram_text += f"Total time in trade: {trade['exit_time'] - trade['entry_time']}\n"
         telegram_text += f"P&L: ${pnl_dollar:.2f}\n"
@@ -309,9 +391,15 @@ class BaseTrader:
         print(telegram_text)
 
         # Reset position
-        self.current_position.create_candle_chart(exit_time=timestamp, pnl_dollar=pnl_dollar, id=len(self.trades), telegram=self.telegram)
         self.current_position = None
         self.last_position_close_time = timestamp
+
+        # Only create chart if we have 700 or fewer trades to save memory
+        if len(self.trades) <= 700:
+            self.create_candle_chart(candle_data=self.trade_df, trade=self.trades[-1])
+        else:
+            print(f"Skipping chart generation for trade {len(self.trades)} (memory optimization: >700 trades)")
+        self.trade_df = pd.DataFrame()
 
 
 class LiveBaseTrader(BaseTrader):
@@ -325,8 +413,8 @@ class LiveBaseTrader(BaseTrader):
 
         super().__init__(symbol, balance, telegram)
 
-        self.risk_amount = LIVE_RISK_AMOUNT
-        self.strategy = FVGStrategy(self.risk_amount)
+        self.risk_amount = 4
+        self.strategy = LiveFVGStrategy(self.cancel_order_by_id, self.risk_amount)
 
 
     def retrieve_balance(self):
@@ -343,26 +431,24 @@ class LiveBaseTrader(BaseTrader):
         send_telegram_message(error)
 
 
-    def cancel_order_by_id(self, order_id: str):
+    def cancel_order_by_id(self, order_id):
         try:
             current_open_orders = self.dex.fetch_open_orders(symbol=self.symbol)
             current_order_ids = [order['id'] for order in current_open_orders]
             if order_id in current_order_ids:
                 result = self.dex.cancel_order(order_id, symbol=self.symbol)
                 print(result)
-            return True
         except Exception as e:
             print(f"Error cancelling order by id {order_id}: {e}")
             send_telegram_message(f"Error cancelling order by id {order_id}: {e}")
-            return False
 
 
     def process_new_candle(self, ltf_data, htf_data, timestamp):
         print(f"Running iteration: time {timestamp}, balance: ${self.current_balance:.2f}")
         if self.current_position:
             print("In position currently")
-            print(self.current_position.trade_df)
-            self.current_position.trade_df = pd.concat([self.current_position.trade_df, ltf_data.tail(1)], ignore_index=True)
+            print(self.trade_df)
+            self.trade_df = pd.concat([self.trade_df, ltf_data.tail(1)], ignore_index=True)
             return
 
         self.strategy.check_entry_conditions(ltf_data, htf_data)
@@ -371,24 +457,24 @@ class LiveBaseTrader(BaseTrader):
 
     def handle_position_close(self, timestamp, position):
         # Calculate dollar P&L
-        exit_price = position.stop_loss
-        price_diff = abs(exit_price - position.entry_price)
-        pnl_dollar = position.quantity * price_diff
+        exit_price = position['stop_loss']
+        price_diff = abs(exit_price - position['entry_price'])
+        pnl_dollar = position['quantity'] * price_diff
 
-        if position.long and exit_price < position.entry_price:
+        if position['direction'] == 'long' and exit_price < position['entry_price']:
             pnl_dollar *= -1
-        elif position.short and exit_price > position.entry_price:
+        elif position['direction'] == 'short' and exit_price > position['entry_price']:
             pnl_dollar *= -1
 
-        final_exposure = exit_price * position.quantity
+        final_exposure = exit_price * position['quantity']
         exit_fees = final_exposure * 0.00045
-        total_fees = position.entry_fees + exit_fees
+        total_fees = position['entry_fees'] + exit_fees
         pnl_dollar -= total_fees
 
 
         # Debug P&L calculation
-        print(f"P&L Debug: Entry: ${position.entry_price:.4f}, Exit: ${exit_price:.4f}")
-        print(f"P&L Debug: Price diff: ${price_diff:.4f}, Position size: {position.quantity:.4f}")
+        print(f"P&L Debug: Entry: ${position['entry_price']:.4f}, Exit: ${exit_price:.4f}")
+        print(f"P&L Debug: Price diff: ${price_diff:.4f}, Position size: {position['quantity']:.4f}")
         print(f"P&L Debug: Raw P&L: ${pnl_dollar:.2f}")
 
         # Update balance
@@ -396,19 +482,19 @@ class LiveBaseTrader(BaseTrader):
 
         # Record trade
         trade = {
-            'entry_time': position.entry_time,
+            'entry_time': position['entry_time'],
             'exit_time': timestamp,
-            'direction': position.direction,
-            'entry_price': position.entry_price,
+            'direction': position['direction'],
+            'entry_price': position['entry_price'],
             'exit_price': exit_price,
-            'entry_fees': position.entry_fees,
+            'entry_fees': position['entry_fees'],
             'exit_fees': exit_fees,
-            'margin': position.margin,
+            'margin': position['margin'],
             'total_fees': total_fees,
-            'quantity': position.quantity,
-            'indicator_time': position.indicator_time,
-            'indicator_type': position.indicator_type,
-            'fvg': position.fvg,
+            'quantity': position['quantity'],
+            'indicator_time': position['indicator_time'],
+            'indicator_type': position['indicator_type'],
+            'fvg': position['fvg'],
             'pnl_dollar': pnl_dollar,
         }
         self.trades.append(trade)
@@ -420,7 +506,7 @@ class LiveBaseTrader(BaseTrader):
         else:
             telegram_text += "===== Position Closed =====\n"
         telegram_text += f"Symbol: {self.symbol if self.symbol else 'N/A'}\n"
-        telegram_text += f"Direction: {position.direction}\n"
+        telegram_text += f"Direction: {position['direction']}\n"
         telegram_text += f"Exit price: ${trade['exit_price']:.4f}\n"
         telegram_text += f"Total time in trade: {trade['exit_time'] - trade['entry_time']}\n"
         telegram_text += f"P&L: ${pnl_dollar:.2f}\n"
@@ -435,4 +521,9 @@ class LiveBaseTrader(BaseTrader):
         # Reset position
         self.last_position_close_time = timestamp
 
-        position.create_candle_chart(exit_time=timestamp, pnl_dollar=pnl_dollar, id=len(self.trades), telegram=self.telegram)
+        # Only create chart if we have 700 or fewer trades to save memory
+        if len(self.trades) <= 700:
+            self.create_candle_chart(candle_data=self.trade_df, trade=self.trades[-1])
+        else:
+            print(f"Skipping chart generation for trade {len(self.trades)} (memory optimization: >700 trades)")
+        self.trade_df = pd.DataFrame()

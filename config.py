@@ -24,16 +24,15 @@ MAX_LEVERAGE = {
 
 # Risk Management
 RISK_PER_TRADE = 150  # Fixed $100 risk per trade
-LIVE_RISK_AMOUNT = 0.3
 
 # Strategy Parameters (ACTUALLY USED)
 DISPLACEMENT_THRESHOLD = 0.3  # Used in displacement detection
-STOP_LOSS_BUFFER = 0.001  # Used in stop loss calculations
+STOP_LOSS_BUFFER = 0.0015  # Used in stop loss calculations
 TAKE_PROFIT_RATIO = 1.5  # Used in position sizing
 TRAILING_CONFIRMATION_CANDLES = 2  # Fewer candles - move stop faster
-MIN_STOP_DISTANCE_COIN = 0.0025  # 0.15% minimum stop distance and FVG size as percentage of coin value
+MIN_STOP_DISTANCE_COIN = 0.0015  # 0.15% minimum stop distance and FVG size as percentage of coin value
 MIN_FVG_STRENGTH = 0.00_000 # 0.005 % minimum FVG strength
-MIN_LARGER_TREND_CONFIDENCE = 0.55 # 0.75 is good
+MIN_LARGER_TREND_CONFIDENCE = 0.00 # 0.75 is good
 
 REVERSAL_CONSTRAINT_ENABLED = True
 REQUIRE_SETUP_INDICATORS = True

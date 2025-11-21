@@ -64,8 +64,7 @@ class BacktestTrader(BaseTrader):
                 or current_time - self.last_position_close_time > pd.Timedelta(minutes=self.trade_cooldown)):
                 self.handle_positions(current_data, current_price=current_data['close'].iloc[-1], current_high=current_data['high'].iloc[-1], current_low=current_data['low'].iloc[-1], current_time=current_time)
 
-            self.strategy.update_fvgs(df=current_data)
-            print("========== ============")
+            print("======================")
             print(f"Active setups: {self.strategy.active_setups}")
 
         # Close any remaining position

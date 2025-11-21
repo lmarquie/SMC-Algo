@@ -28,8 +28,6 @@ class LiveTrader(LiveBaseTrader):
 
         self.current_price = 0
 
-        self.orders = []
-
         try:
             result = self.dex.set_leverage(leverage=MAX_LEVERAGE[self.symbol], symbol=symbol)
             if result['status'] != 'ok':
@@ -54,6 +52,7 @@ class LiveTrader(LiveBaseTrader):
                     "high": ltf_data[index][2],
                     "low": ltf_data[index][3],
                     "close": ltf_data[index][4],
+                    "volume": ltf_data[index][5] if len(ltf_data[index]) > 5 else 0,
                 })
             for index in range(len(htf_data) - self.htf_lookback - 1, len(htf_data) - 1):
                 htf_list.append({
@@ -62,6 +61,7 @@ class LiveTrader(LiveBaseTrader):
                     "high": htf_data[index][2],
                     "low": htf_data[index][3],
                     "close": htf_data[index][4],
+                    "volume": htf_data[index][5] if len(htf_data[index]) > 5 else 0,
                 })
 
             ltf_df = pd.DataFrame(ltf_list)
@@ -81,70 +81,78 @@ class LiveTrader(LiveBaseTrader):
         current_price = ticker['last']
         best_ask = ticker['ask']
 
-        if setup.long:
-            side = 'buy'
+        if setup['direction'] == 'long':
             # Safety checks
-            if current_price <= setup.entry_price:
+            if current_price <= setup['entry_price']:
                 print("Entry price is too high, skipping order")
-                print(f"Entry price {setup.entry_price}, current price {current_price}")
-                setup.fill()
-                return
-        else: # Direction is short
-            side = 'short'
-            # Safety checks
-            if current_price >= setup.entry_price:
-                print("Entry price is too low, skipping order")
-                print(f"Entry price {setup.entry_price}, current price {current_price}")
-                setup.fill()
+                print(f"Entry price {setup['entry_price']}, current price {current_price}")
+                setup['filled'] = True
                 return
 
-        try:
-            print(f"Quantity: {setup.quantity}")
-            print(f"Required Margin: {(setup.quantity * setup.entry_price) / MAX_LEVERAGE[self.symbol]}")
-            result = self.dex.create_order(
-                symbol=self.symbol,
-                type='limit',
-                side=side,
-                amount=setup.quantity,
-                price=setup.entry_price,
-            )
-            setup.oid = result['id']
-            self.orders.append(setup)
-        except Exception as e:
+            # Place order
+            try:
+                print(f"Quantity: {setup['quantity']}")
+                print(f"Required Margin: {(setup['quantity'] * setup['entry_price']) / MAX_LEVERAGE[self.symbol]}")
+                result = self.dex.create_order(
+                    symbol=self.symbol,
+                    type='limit',
+                    side='buy',
+                    amount=setup['quantity'],
+                    price=setup['entry_price'],
+                )
+                setup['oid'] = result['id']
+
+            except Exception as e:
+                print(f"Error placing order: {e}")
+                self.raise_alarm(f"Error placing order: {e}")
+
+        else:
+            # Safety checks
+            if current_price >= setup['entry_price']:
+                print("Entry price is too low, skipping order")
+                print(f"Entry price {setup['entry_price']}, current price {current_price}")
+                setup['filled'] = True
+                return
+
+            # Place order
+            try:
+                print(f"Quantity: {setup['quantity']}")
+                print(f"Required Margin: {(setup['quantity'] * setup['entry_price']) / MAX_LEVERAGE[self.symbol]}")
+                result = self.dex.create_order(
+                    symbol=self.symbol,
+                    type='limit',
+                    side='sell',
+                    amount=setup['quantity'],
+                    price=setup['entry_price'],
+                )
+                setup['oid'] = result['id']
+
+            except Exception as e:
                 print(f"Error placing order: {e}")
                 self.raise_alarm(f"Error placing order: {e}")
 
 
-    def cancel_lagging_orders(self):
-        for order in self.orders:
-            if not order in self.strategy.active_setups:
-                if self.cancel_order_by_id(order.oid):
-                    self.orders.remove(order)
-
-
     def update_position_entered(self):
         if not self.current_position:
-            positions = self.dex.fetch_positions(symbols=[self.symbol])
+            positions = self.dex.fetch_positions()
             if len(positions) > 1:
                 print(f"Multiple positions found, closing all: {positions}")
                 self.raise_alarm("Multiple positions found, closing all")
                 self.close_all_open_positions()
             elif len(positions) == 1:
                 print(f"Current position: {positions[0]}")
-                order = self.find_matching_position(ccxt_position=positions[0])
-                if order:
-                    self.current_position = self.handle_position_open(order, datetime.now(), self.ltf_data)
+                position = self.find_matching_position(ccxt_position=positions[0])
+                self.current_position = self.handle_position_open(position, datetime.now(), self.ltf_data)
 
-                    # Cancel all open orders, then place a stop loss
-                    self.cancel_all_open_orders()
-                    print("Cancelled all open orders because of new order taken")
-                    self.place_stop_loss_order(
-                        position_direction=order.direction,
-                        stop_price=order.stop_loss,
-                        quantity=order.quantity,
-                    )
-        elif self.current_position:
-            positions = self.dex.fetch_positions(symbols=[self.symbol])
+                # Cancel all open orders, then place a stop loss
+                self.cancel_all_open_orders()
+                self.place_stop_loss_order(
+                    position_direction=position['direction'],
+                    stop_price=position['stop_loss'],
+                    quantity=position['quantity'],
+                )
+        if self.current_position:
+            positions = self.dex.fetch_positions()
             if len(positions) == 0:
                 print("Position closed")
                 self.current_position = None
@@ -161,20 +169,28 @@ class LiveTrader(LiveBaseTrader):
                 self.close_all_open_positions()
 
 
+
+
     def find_matching_position(self, ccxt_position):
         try:
+            valid_setups = [setup for setup in self.strategy.active_setups if setup['oid']]
             if ccxt_position['side'] == 'long':
-                long_orders = [order for order in self.orders if order.long]
-                highest_long_order = max(long_orders, key=lambda setup: setup.entry_price)
-                return highest_long_order
+                long_setups = [setup for setup in valid_setups if setup['direction'] == 'long']
+                if not long_setups:
+                    print("No long setups found for matching position")
+                    return None
+                highest_long_setup = max(long_setups, key=lambda setup: setup['entry_price'])
+                return highest_long_setup
 
             else:
-                short_orders = [order for order in self.orders if order.short]
-                lowest_short_order = min(short_orders, key=lambda setup: setup.entry_price)
-                return lowest_short_order
+                short_setups = [setup for setup in valid_setups if setup['direction'] == 'short']
+                if not short_setups:
+                    print("No short setups found for matching position")
+                    return None
+                lowest_short_setup = min(short_setups, key=lambda setup: setup['entry_price'])
+                return lowest_short_setup
         except Exception as e:
             print(f"Error finding matching position: {e}")
-            traceback.print_exc()
             self.raise_alarm(f"Error finding matching position: {e}")
             return None
 
@@ -211,16 +227,16 @@ class LiveTrader(LiveBaseTrader):
         try:
             print("Managing current position")
             current_price = self.dex.fetch_ticker(self.symbol)['last']
-            old_stop = self.current_position.stop_loss
-            self.strategy.update_trailing_stop(current_price=current_price, position=self.current_position, telegram=self.telegram)
-            new_stop = self.current_position.stop_loss
+            old_stop = self.current_position['stop_loss']
+            self.strategy.update_trailing_stop(current_price=current_price, df=self.ltf_data, position=self.current_position, telegram=self.telegram)
+            new_stop = self.current_position['stop_loss']
 
             if old_stop != new_stop:
                 print(f"New stop loss: {new_stop}")
                 self.place_stop_loss_order(
-                    position_direction=self.current_position.direction,
-                    stop_price=self.current_position.stop_loss,
-                    quantity=self.current_position.quantity,
+                    position_direction=self.current_position['direction'],
+                    stop_price=self.current_position['stop_loss'],
+                    quantity=self.current_position['quantity'],
                 )
         except Exception as e:
             print(f"Error managing position stops: {e}")
@@ -232,20 +248,20 @@ class LiveTrader(LiveBaseTrader):
             return
         print("Checking for new setups (manage_orders()...")
 
-        current_orders = self.dex.fetch_open_orders(symbol=self.symbol)
+        current_orders = self.dex.fetch_open_orders()
         current_order_ids = [order['id'] for order in current_orders]
 
         best_setup = max(self.strategy.active_setups, key=lambda x: x['entry_price'])
         for setup in self.strategy.active_setups:
             if setup != best_setup:
-                setup.oid = None
+                setup['oid'] = None
 
-        if not best_setup.oid in current_order_ids:
+        if not best_setup['oid'] in current_order_ids:
             print(f"Placing new order: {best_setup}")
             self.place_order(best_setup)
 
-        updated_orders = self.dex.fetch_open_orders(symbol=self.symbol)
-        orders_to_cancel = [order for order in updated_orders if order['id'] != best_setup.oid]
+        updated_orders = self.dex.fetch_open_orders()
+        orders_to_cancel = [order for order in updated_orders if order['id'] != best_setup['oid']]
         for order in orders_to_cancel:
             result = self.dex.cancel_order(order['id'], symbol=self.symbol)
             print(f"Cancelling order: {result}")
@@ -254,7 +270,7 @@ class LiveTrader(LiveBaseTrader):
 
 
     def cancel_all_open_orders(self):
-        orders = self.dex.fetch_open_orders(symbol=self.symbol)
+        orders = self.dex.fetch_open_orders()
         for order in orders:
             result = self.dex.cancel_order(order['id'], symbol=self.symbol)
             print(result)
@@ -263,7 +279,7 @@ class LiveTrader(LiveBaseTrader):
 
 
     def close_all_open_positions(self):
-        positions = self.dex.fetch_positions(symbols=[self.symbol])
+        positions = self.dex.fetch_positions()
         for position in positions:
             size = float(position['contracts'])
             current_price = self.dex.fetch_ticker(self.symbol)['last']
@@ -363,7 +379,6 @@ class LiveTrader(LiveBaseTrader):
                 current_ticker = self.dex.fetch_ticker(self.symbol)
                 self.current_price = current_ticker['last']
                 self.handle_candle_data(ltf_candle, htf_candle, current_time)
-                self.cancel_lagging_orders()
 
                 old_position = self.current_position
                 self.update_position_entered() # Updates self.current_position if a position is entered on hyperliquid
@@ -390,7 +405,5 @@ class LiveTrader(LiveBaseTrader):
 
         self.show_final_results(self.trades, "live test")
 
-symbol = input("What symbol would you like to trade? (Do not include /USDC:USDC)\n") + "/USDC:USDC"
-
-trader = LiveTrader(symbol)
-asyncio.run(trader.run_trading_loop(duration_minutes=60*24*7))
+trader = LiveTrader("SOL/USDC:USDC")
+asyncio.run(trader.run_trading_loop(duration_minutes=60*24*7))  # 7 days
