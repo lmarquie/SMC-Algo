@@ -259,12 +259,12 @@ class BaseTrader:
         return None
 
 
-    def check_position_closed(self, current_price):
+    def check_position_closed(self, current_high, current_low):
         if self.current_position['direction'] == 'long':
-            if current_price <= self.current_position['stop_loss']:
+            if current_low <= self.current_position['stop_loss']:
                 return True
         elif self.current_position['direction'] == 'short':
-            if current_price >= self.current_position['stop_loss']:
+            if current_high >= self.current_position['stop_loss']:
                 return True
 
         return False
@@ -279,7 +279,7 @@ class BaseTrader:
                     send_telegram_message(f"New position found at {current_time}")
                 self.current_position = self.handle_position_open(position, current_time, ltf_data)
         else:
-            if self.check_position_closed(current_price):
+            if self.check_position_closed(current_high, current_low):
                 if trade_config == "livetest":
                     last_candle = [{
                         'T': current_time,
