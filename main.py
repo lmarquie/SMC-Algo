@@ -8,6 +8,7 @@ from models.position import Position
 from config import *
 import shutil
 import os
+from datetime import timedelta
 
 SYMBOL = 'SOL'
 EXCHANGE = 'binance'
@@ -53,15 +54,16 @@ for i in range(len(candleManager.future_data)):
                 initial_stop_loss=setup.stop_loss,
                 entry_time=candleManager.ltf_data['T'].iloc[-1],
                 side=found_position['side'],
-                trade_df=candleManager.ltf_data[-20:],
+                trade_df=candleManager.ltf_data[-50:],
                 fvg=setup.fvg,
                 indicator_type=setup.indicator_type,
                 indicator_time=setup.indicator_time,
                 larger_trend=setup.larger_trend,
                 trend_confidence=setup.trend_confidence,
             )
-        else:
-            print("(main) Adding candle to existing position")
+
+        elif current_candle['T'] >= tracked_position.entry_time + timedelta(minutes=SWING_LOOKBACK_BACKWARD + SWING_LOOKBACK_FORWARD):
+            #print("(main) Adding candle to existing position")
             tracked_position.add_candle(current_candle)
 
             stop_side = 'buy' if found_position['side'] == 'long' else 'sell'
@@ -86,12 +88,12 @@ for i in range(len(candleManager.future_data)):
             tracked_position.add_candle(current_candle)
             num_trades += 1
             tracked_position.create_candle_chart(
-                exit_time=candleManager.ltf_data.iloc[-1]['T'],
+                exit_time=current_candle['T'],
                 pnl_dollar=tracked_position.calculate_pnl(tracked_position.get_last_stop()),
                 id=num_trades,
                 telegram=False
             )
-            balance += tracked_position.calculate_pnl(tracked_position.get_last_stop())
+            balance += tracked_position.calculate_pnl(tracked_position.get_last_stop()) - 18
             tracked_position = None
             print(f"(main) Balance: ${balance:.2f}")
 

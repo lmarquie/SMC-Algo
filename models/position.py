@@ -129,7 +129,7 @@ class Position:
                 send_telegram_image(f"trades/losses/trade_{id}.png")
 
     def add_candle(self, candle):
-        self.trade_df.loc[len(self.trade_df)] = candle
+        self.trade_df = pd.concat([self.trade_df, pd.DataFrame([candle])], ignore_index=True)
 
     def get_idx(self):
         return len(self.trade_df) - 1

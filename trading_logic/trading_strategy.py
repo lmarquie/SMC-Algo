@@ -219,7 +219,6 @@ class FVGStrategy:
                         )
                         self.active_setups.append(setup)
                         self.last_order_placed = setup
-                        print("(_add_bullish_setups) Adding sell order")
                         self.client.place_limit_order(
                             quantity=quantity,
                             placement_time=df['T'].iloc[-1],
@@ -286,7 +285,6 @@ class FVGStrategy:
                         )
                         self.active_setups.append(setup)
                         self.last_order_placed = setup
-                        print("(_add_bearish_setups) Adding sell order")
                         self.client.place_limit_order(
                             quantity=quantity,
                             placement_time=df['T'].iloc[-1],
@@ -295,15 +293,20 @@ class FVGStrategy:
                         )
 
 
-    def _get_valid_swing_stop(self, type, df, current_price):
-        current_idx = df.index[-1]
-        swing_candle = df.loc[current_idx - SWING_LOOKBACK_FORWARD]
-        swing_idx = current_idx - SWING_LOOKBACK_FORWARD
+    def _get_valid_swing_stop(self, type, df, current_candle):
+        current_idx = len(df) - 1
+        swing_candle = df.iloc[-SWING_LOOKBACK_FORWARD]
+        swing_idx = len(df) - SWING_LOOKBACK_FORWARD
 
         for i in list(range(swing_idx - SWING_LOOKBACK_BACKWARD, swing_idx)) + list(range(swing_idx + 1, current_idx)):
             if (type == 'high' and df['high'].iloc[i] > swing_candle['high']) or \
                     (type == 'low' and df['low'].iloc[i] < swing_candle['low']):
                 return None
+
+        if type == 'high' and swing_candle['high'] <= current_candle['high']:
+            return None
+        elif type == 'low' and swing_candle['low'] >= current_candle['low']:
+            return None
 
         return swing_candle[type]
 
@@ -330,7 +333,6 @@ class FVGStrategy:
         for order in orders:
             if (current_time - order['placement_time']).total_seconds() / 60 > MAX_INDICATOR_ENTRY_DIST:
                 self.client.cancel_order(order['id'])
-                print(f"(cancel_lagging_orders) Canceling order {order['id']} due to lagging")
 
 
     def update_trailing_stop(self, current_stop, position, df, candle):
@@ -348,14 +350,14 @@ class FVGStrategy:
                     return None
 
         if position.long:
-            swing_point = self._get_valid_swing_stop('low', df, candle['low'])
+            swing_point = self._get_valid_swing_stop('low', df, candle)
             if swing_point:
                 new_stop = swing_point - STOP_LOSS_BUFFER
                 if new_stop > position.get_last_stop():
                     return new_stop
 
         else:  # short
-            swing_point = self._get_valid_swing_stop('high', df, candle['high'])
+            swing_point = self._get_valid_swing_stop('high', df, candle)
             if swing_point:
                 new_stop = swing_point + STOP_LOSS_BUFFER
                 if new_stop < position.get_last_stop():

@@ -31,6 +31,6 @@ class SimulatedClient(Client):
         orders = self.exchange.get_limit_orders()
         for index, order in enumerate(orders):
             if order['id'] == id:
-                print(f"(cancel_order) Cancelling order {id}")
+                #print(f"(cancel_order) Cancelling order {id}")
                 self.exchange.limit_orders.pop(index)
 
