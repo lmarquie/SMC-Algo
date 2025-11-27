@@ -1,6 +1,7 @@
 from client.simulatedClient import SimulatedClient
 from exchange.simulatedExchange import SimulatedExchange
 from candleManager.simulatedCandleManager import SimulatedCandleManager
+from models.PerformanceCalculator import PerformanceCalculator
 from trading_logic.structure_analysis import StructureAnalyzer
 from trading_logic.trading_strategy import FVGStrategy
 from models.candle import Candle
@@ -20,6 +21,8 @@ client = SimulatedClient(exchange=exchange)
 candleManager = SimulatedCandleManager(EXCHANGE, SYMBOL)
 strategy = FVGStrategy(client=client, risk_amount=RISK_AMOUNT)
 analyzer = StructureAnalyzer(min_fvg_strength=0.0)
+performanceCalculator = PerformanceCalculator(starting_balance=balance)
+last_position_close_time = None
 
 empty_candle = Candle(0,0,0,0)
 tracked_position = None
@@ -60,7 +63,11 @@ for i in range(len(candleManager.future_data)):
                 indicator_time=setup.indicator_time,
                 larger_trend=setup.larger_trend,
                 trend_confidence=setup.trend_confidence,
+                entry_timestamp=candleManager.ltf_data['T'].iloc[-1],
             )
+            strategy.clear_setups()
+            # TEMPORARY
+            client.cancel_all_entry_orders()
 
         elif current_candle['T'] >= tracked_position.entry_time + timedelta(minutes=SWING_LOOKBACK_BACKWARD + SWING_LOOKBACK_FORWARD):
             #print("(main) Adding candle to existing position")
@@ -87,13 +94,17 @@ for i in range(len(candleManager.future_data)):
         if tracked_position:
             tracked_position.add_candle(current_candle)
             num_trades += 1
+            pnl = tracked_position.calculate_pnl(tracked_position.get_last_stop())
             tracked_position.create_candle_chart(
                 exit_time=current_candle['T'],
-                pnl_dollar=tracked_position.calculate_pnl(tracked_position.get_last_stop()),
+                pnl_dollar=pnl,
                 id=num_trades,
                 telegram=False
             )
-            balance += tracked_position.calculate_pnl(tracked_position.get_last_stop()) - 18
+            last_position_close_time = current_candle['T']
+            fees = 18
+            balance += pnl - fees
+            performanceCalculator.add_trade(tracked_position, fees)
             tracked_position = None
             print(f"(main) Balance: ${balance:.2f}")
 
@@ -101,9 +112,11 @@ for i in range(len(candleManager.future_data)):
             client.force_close_all_positions()
             client.cancel_all_orders()
         else:
-            strategy.check_entry_conditions(candleManager.ltf_data, candleManager.htf_data)
+            if (not last_position_close_time
+                or current_candle['T'] >= last_position_close_time + timedelta(minutes=20)):
+                strategy.check_entry_conditions(candleManager.ltf_data, candleManager.htf_data)
 
-print("(main) Final balance: " + str(balance))
+performanceCalculator.log_performance()
 
 
 

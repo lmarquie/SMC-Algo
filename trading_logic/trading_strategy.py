@@ -39,6 +39,11 @@ class FVGStrategy:
         self.exchange = client.exchange
 
 
+    def clear_setups(self):
+        self.active_setups = []
+        self.active_fvgs = []
+
+
     def update_active_setups(self, df):
         # Create a new list without expired setups to avoid modifying list while iterating
         current_time = df['T'].iloc[-1]
@@ -295,10 +300,10 @@ class FVGStrategy:
 
     def _get_valid_swing_stop(self, type, df, current_candle):
         current_idx = len(df) - 1
-        swing_candle = df.iloc[-SWING_LOOKBACK_FORWARD]
-        swing_idx = len(df) - SWING_LOOKBACK_FORWARD
+        swing_candle = df.iloc[-(SWING_LOOKBACK_FORWARD + 1)]
+        swing_idx = len(df) - (SWING_LOOKBACK_FORWARD + 1)
 
-        for i in list(range(swing_idx - SWING_LOOKBACK_BACKWARD, swing_idx)) + list(range(swing_idx + 1, current_idx)):
+        for i in list(range(swing_idx - SWING_LOOKBACK_BACKWARD, swing_idx)) + list(range(swing_idx + 1, current_idx + 1)):
             if (type == 'high' and df['high'].iloc[i] > swing_candle['high']) or \
                     (type == 'low' and df['low'].iloc[i] < swing_candle['low']):
                 return None

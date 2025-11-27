@@ -34,3 +34,8 @@ class SimulatedClient(Client):
                 #print(f"(cancel_order) Cancelling order {id}")
                 self.exchange.limit_orders.pop(index)
 
+    # assumes that all non reduce-only limit orders are entry orders
+    def cancel_all_entry_orders(self):
+        for order in self.exchange.get_limit_orders():
+            self.cancel_order(order['id'])
+

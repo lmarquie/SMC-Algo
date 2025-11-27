@@ -18,7 +18,8 @@ class Position:
             indicator_type,
             indicator_time,
             larger_trend,
-            trend_confidence
+            trend_confidence,
+            entry_timestamp,
         ):
 
         if (fvg.time - entry_time).total_seconds() / 60 > MAX_INDICATOR_ENTRY_DIST + MAX_INDICATOR_ENTRY_DIST:
@@ -52,6 +53,7 @@ class Position:
 
         self.mss = indicator_type == 'mss'
         self.bos = indicator_type == 'bos'
+        self.pnl = 0
 
         self.stop_losses = [{
             "swing_idx": 0,
@@ -59,8 +61,12 @@ class Position:
             "value": initial_stop_loss
         }]
 
+        self.month = entry_timestamp.strftime('%B')
+        self.year = entry_timestamp.year
+
 
     def create_candle_chart(self, exit_time, pnl_dollar, id, telegram):
+        self.pnl = pnl_dollar
         print("(create_candle_chart) Creating candle chart for trade")
         plt.figure(figsize=(18, 6))
         plt.margins(x=0.1)
