@@ -193,7 +193,7 @@ class FVGStrategy:
                         stop_loss = fvg.bottom - STOP_LOSS_BUFFER
 
                         # Find the nearest swing low for structure-based stop
-                        nearest_swing_low, _ = self._find_nearest_swing(type='low', df_analyzed=df_analyzed, current_price=last_close)
+                        nearest_swing_low, _ = self._find_nearest_swing(type='low', df_analyzed=df_analyzed, current_price=last_low)
                         if nearest_swing_low:
                             swing_stop = nearest_swing_low - STOP_LOSS_BUFFER
                             # Use the LOWER of the two stops (FVG-based or structure-based)
@@ -201,9 +201,9 @@ class FVGStrategy:
 
                         # TEMP SOLUTION
                         entry_price = fvg.midpoint
-                        stop_distance = entry_price - stop_loss
-                        if stop_distance < entry_price * MIN_STOP_DISTANCE_COIN:
-                            stop_distance = entry_price * MIN_STOP_DISTANCE_COIN
+                        stop_distance = entry_price * MIN_STOP_DISTANCE_COIN
+                        #if stop_distance < entry_price * MIN_STOP_DISTANCE_COIN:
+                        #    stop_distance = entry_price * MIN_STOP_DISTANCE_COIN
                         stop_loss = entry_price - stop_distance
                         quantity = self.risk_amount / stop_distance
 
@@ -259,7 +259,7 @@ class FVGStrategy:
                         stop_loss = fvg.top + STOP_LOSS_BUFFER
 
                         # Find the nearest swing high for structure-based stop
-                        nearest_swing_high, _ = self._find_nearest_swing(type='high', df_analyzed=df_analyzed, current_price=last_close)
+                        nearest_swing_high, _ = self._find_nearest_swing(type='high', df_analyzed=df_analyzed, current_price=last_high)
                         if nearest_swing_high:
                             swing_stop = nearest_swing_high + STOP_LOSS_BUFFER
                             # Use the HIGHER of the two stops (FVG-based or structure-based)
@@ -267,9 +267,9 @@ class FVGStrategy:
 
                         # TEMP SOLUTION
                         entry_price = fvg.midpoint
-                        stop_distance = stop_loss - entry_price
-                        if stop_distance < entry_price * MIN_STOP_DISTANCE_COIN:
-                            stop_distance = entry_price * MIN_STOP_DISTANCE_COIN
+                        stop_distance = entry_price * MIN_STOP_DISTANCE_COIN
+                        #if stop_distance < entry_price * MIN_STOP_DISTANCE_COIN:
+                        #    stop_distance = entry_price * MIN_STOP_DISTANCE_COIN
                         stop_loss = entry_price + stop_distance
                         quantity = self.risk_amount / stop_distance
 
@@ -297,7 +297,6 @@ class FVGStrategy:
                             entry_price=entry_price,
                         )
 
-
     def _get_valid_swing_stop(self, type, df, current_candle):
         current_idx = len(df) - 1
         swing_candle = df.iloc[-(SWING_LOOKBACK_FORWARD + 1)]
@@ -314,6 +313,7 @@ class FVGStrategy:
             return None
 
         return swing_candle[type]
+
 
     def _find_nearest_swing(self, type, df_analyzed, current_price):
         recent_df = df_analyzed.tail(50)
@@ -341,6 +341,7 @@ class FVGStrategy:
 
 
     def update_trailing_stop(self, current_stop, position, df, candle):
+
         if position.long:
             risk = max(0.0, position.entry_price - current_stop)
             if risk > 0:
@@ -354,8 +355,10 @@ class FVGStrategy:
                 if reward < risk:
                     return None
 
+
         if position.long:
             swing_point = self._get_valid_swing_stop('low', df, candle)
+            #swing_point = self._find_nearest_swing("low", df.iloc[-(len(position.trade_df)-50):], candle['low'])[0]
             if swing_point:
                 new_stop = swing_point - STOP_LOSS_BUFFER
                 if new_stop > position.get_last_stop():
@@ -363,6 +366,7 @@ class FVGStrategy:
 
         else:  # short
             swing_point = self._get_valid_swing_stop('high', df, candle)
+            #swing_point = self._find_nearest_swing("high", df.iloc[-(len(position.trade_df)-50):], candle['high'])[0]
             if swing_point:
                 new_stop = swing_point + STOP_LOSS_BUFFER
                 if new_stop < position.get_last_stop():

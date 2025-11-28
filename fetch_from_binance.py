@@ -17,7 +17,7 @@ def fetch_ohlc(symbol: str, month_year: str, interval="1m"):
     end_ts = int(end_dt.timestamp() * 1000)
 
     url = "https://api.binance.com/api/v3/klines"
-    limit = 1000
+    limit = 5000
     data = []
     current_ts = start_ts
 
@@ -38,7 +38,7 @@ def fetch_ohlc(symbol: str, month_year: str, interval="1m"):
         last_open_time = klines[-1][0]
         current_ts = last_open_time + 60 * 1000
         print(f"Fetched {len(data)} candles for {month_year}")
-        time.sleep(0.05)
+        time.sleep(0.01)
 
     # Prepare JSON output list with selected fields
     json_data = []
@@ -63,17 +63,17 @@ months = [
     #"10_2024",
     #"11_2024",
     #"12_2024",
-    "01_2025",
-    "02_2025",
-    "03_2025",
-    "04_2025",
-    "05_2025",
-    "06_2025",
+    #"01_2025",
+    #"02_2025",
+    #"03_2025",
+    #"04_2025",
+    #"05_2025",
+    #"06_2025",
     "07_2025",
     "08_2025",
     "09_2025",
     "10_2025",
-    #"11_2025",
+    "11_2025",
     #"12_2025",
 ]
 
