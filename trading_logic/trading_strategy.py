@@ -31,10 +31,6 @@ class FVGStrategy:
         self.previous_fvg_times = []
         self.risk_amount = risk_amount
 
-        self.max_fvg_to_indicator_dist = 8
-        self.max_entry_indicator_dist = 8
-
-        self.fvg_lookback = self.max_fvg_to_indicator_dist
         self.client = client
         self.exchange = client.exchange
 
@@ -49,7 +45,7 @@ class FVGStrategy:
         current_time = df['T'].iloc[-1]
         self.active_setups = [
             setup for setup in self.active_setups 
-            if current_time - setup.indicator_time <= timedelta(minutes=self.max_entry_indicator_dist)
+            if current_time - setup.indicator_time <= timedelta(minutes=MAX_INDICATOR_ENTRY_DIST)
         ]
 
 
@@ -57,7 +53,7 @@ class FVGStrategy:
         """Update and maintain active FVGs"""
 
         recent_fvgs = []
-        fvg_candidates = self.analyzer.detect_fvg(df[-(self.fvg_lookback + 1):])
+        fvg_candidates = self.analyzer.detect_fvg(df[-(MAX_FVG_INDICATOR_DIST + 1):])
         
         for fvg_candidate in fvg_candidates:
             fvg = FVG(
@@ -82,14 +78,14 @@ class FVGStrategy:
             if not fvg.filled:
                 if fvg.bullish:
                     # FVG is filled if price goes below the bottom
-                    if current_low < fvg.midpoint:
+                    if current_low < fvg.top:
                         fvg.fill()
                 else:  # bearish
                     # FVG is filled if price goes above the top
-                    if current_high > fvg.midpoint:
+                    if current_high > fvg.bottom:
                         fvg.fill()
                 
-                if current_time - fvg.time > timedelta(minutes=self.fvg_lookback):
+                if current_time - fvg.time > timedelta(minutes=MAX_FVG_INDICATOR_DIST):
                     fvg.fill()
 
             if not fvg.filled:

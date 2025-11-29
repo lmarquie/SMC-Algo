@@ -107,6 +107,8 @@ class StructureAnalyzer:
         closes = df['close'].to_numpy()
         times = df['T'].to_numpy()
 
+        avg_candle_size = np.mean(highs[-24:] - lows[-24:])
+
         for i in range(2, len(highs)):
             # Bullish FVG: gap between candle 1's high and candle 3's low
             c1_high = highs[i - 2]
@@ -141,7 +143,7 @@ class StructureAnalyzer:
                 c3_size = c3_high - c3_low
                 fvg_candle_largest = (c2_size > c1_size) and (c2_size > c3_size)
                 
-                if before_valid and after_valid and fvg_candle_largest:
+                if fvg_size > avg_candle_size:
                     fvg = {
                         'type': 'bullish',
                         'time': pd.to_datetime(times[i - 1]),
@@ -186,7 +188,7 @@ class StructureAnalyzer:
                 c3_size = c3_high - c3_low
                 fvg_candle_largest = (c2_size > c1_size) and (c2_size > c3_size)
                 
-                if before_valid and after_valid and fvg_candle_largest:
+                if fvg_size > avg_candle_size:
                     fvg = {
                         'type': 'bearish',
                         'time': pd.to_datetime(times[i - 1]),

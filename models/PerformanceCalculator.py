@@ -8,6 +8,7 @@ class PerformanceCalculator:
         self.starting_balance = starting_balance
         self.balance = starting_balance
         self.trades = []
+        self.trade_stop_amts = []
 
 
     def add_trade(self, trade, fees):
@@ -18,6 +19,7 @@ class PerformanceCalculator:
             self.losing_trades.append(trade)
         self.balance += trade.pnl - fees
         trade.pnl -= fees
+        self.trade_stop_amts.append(len(trade.stop_losses))
 
 
     def log_performance(self):
@@ -27,12 +29,14 @@ class PerformanceCalculator:
         print(f"PNL: ${pnl:.2f}")
 
         average_win = np.mean([winning_trade.pnl for winning_trade in self.winning_trades])
-        average_loss = 0 - np.mean([losing_trade.pnl for losing_trade in self.losing_trades])
-        average_pnl = (average_win + average_loss) / 2
+        average_loss = np.mean([losing_trade.pnl for losing_trade in self.losing_trades])
+        average_pnl = np.mean([trade.pnl for trade in self.trades])
 
         print(f"Average Win: ${average_win:.2f}")
         print(f"Average Loss: ${average_loss:.2f}")
         print(f"Average PNL: ${average_pnl:.2f}")
+
+        print(f"Average stop losses placed per trade: {np.mean(self.trade_stop_amts):.2f}")
 
         total_trades = len(self.winning_trades) + len(self.losing_trades)
         print(f"Total Trades: {total_trades}")

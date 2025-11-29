@@ -34,11 +34,11 @@ HTF_CANDLE_DURATION = 15
 SWING_LOOKBACK_FORWARD = 3
 SWING_LOOKBACK_BACKWARD = 3
 
-MAX_FVG_INDICATOR_DIST = 8
-MAX_INDICATOR_ENTRY_DIST = 8
+MAX_FVG_INDICATOR_DIST = 20
+MAX_INDICATOR_ENTRY_DIST = 20
 
 DISPLACEMENT_THRESHOLD = 0.3  # Used in displacement detection
-STOP_LOSS_BUFFER = 0.0015  # Used in stop loss calculations
+STOP_LOSS_BUFFER = 0.0000  # Used in stop loss calculations
 TAKE_PROFIT_RATIO = 1.5  # Used in position sizing
 TRAILING_CONFIRMATION_CANDLES = 2  # Fewer candles - move stop faster
 MIN_STOP_DISTANCE_COIN = 0.0015  # 0.15% minimum stop distance and FVG size as percentage of coin value
