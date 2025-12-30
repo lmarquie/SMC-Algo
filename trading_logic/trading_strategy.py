@@ -132,7 +132,6 @@ class FVGStrategy:
                 #and self.identify_trend(htf_df, HTF_SEQUENTIAL_MIN) == 'uptrend'
                 ):
                 mss_time = df.loc[df['swing_high'].notna(), 'T'].iloc[-1]
-                self.active_setups = []
                 self.add_setup(direction=Direction.LONG, fvg=last_fvg, mss_time=mss_time, df=df)
 
             elif (last_fvg.bearish
@@ -142,11 +141,14 @@ class FVGStrategy:
                 #and self.identify_trend(htf_df, HTF_SEQUENTIAL_MIN) == 'downtrend'
                 ):
                 mss_time = df.loc[df['swing_low'].notna(), 'T'].iloc[-1]
-                self.active_setups = []
                 self.add_setup(direction=Direction.SHORT, fvg=last_fvg, mss_time=mss_time, df=df)
 
 
     def add_setup(self, direction: Direction, fvg: FVG, mss_time, df: pd.DataFrame):
+        # Clear previous setups and orders to reset
+        self.clear_setups()
+        self.client.cancel_all_orders()
+
         entry_price = fvg.midpoint
 
         if direction == Direction.LONG:

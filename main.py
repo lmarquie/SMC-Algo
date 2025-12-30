@@ -45,17 +45,14 @@ for i in range(len(candleManager.future_data)):
         found_position = found_positions[0]
         if not tracked_position:
             setup = strategy.most_recent_setup
-            if (
-                found_position['side'] == Side.BUY and setup.direction == Direction.SHORT
-                or found_position['side'] == Side.SELL and setup.direction == Direction.LONG
-            ):
+            if found_position['direction'] != setup.direction:
                 raise Exception("Found position does not match last order side")
 
             print("(main) New position entered")
             client.place_stop_market_order(
                 quantity=found_position['quantity'],
                 placement_time=current_candle['T'],
-                side=Side.SELL if found_position['side'] == Side.SELL else Side.BUY,
+                side=Side.SELL if found_position['direction'] == Direction.LONG else Side.BUY,
                 trigger_price=setup.initial_stop_loss,
             )
 
@@ -64,7 +61,7 @@ for i in range(len(candleManager.future_data)):
                 risk_amount=RISK_AMOUNT,
                 initial_stop_loss=setup.initial_stop_loss,
                 entry_time=candleManager.ltf_data['T'].iloc[-1],
-                direction=Direction.LONG if found_position['side'] == Side.BUY else Direction.SHORT,
+                direction=found_position['direction'],
                 trade_df=candleManager.ltf_data[-50:],
                 fvg=setup.fvg,
                 mss_time=setup.mss_time,
@@ -78,7 +75,7 @@ for i in range(len(candleManager.future_data)):
             #print("(main) Adding candle to existing position")
             tracked_position.add_candle(current_candle)
 
-            stop_side = Side.SELL if found_position['side'] == Side.BUY else Side.BUY
+            stop_side = Side.SELL if found_position['direction'] == Direction.LONG else Side.BUY
             stop_lookback = int((candleManager.ltf_data['T'].iloc[-1] - tracked_position.entry_time).total_seconds() / 60)
             trigger_price = strategy.update_trailing_stop(
                 current_stop=tracked_position.get_last_stop(),

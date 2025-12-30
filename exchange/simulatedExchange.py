@@ -49,7 +49,7 @@ class SimulatedExchange(Exchange):
                 if high >= order['entry_price'] >= low:
                     self.current_position = {
                         'quantity': order['quantity'],
-                        'side': "long" if order['side'] == "buy" else "short",
+                        'direction': Direction.LONG if order['side'] == Side.BUY else Direction.SHORT,
                         'entry_price': order['entry_price'],
                     }
             if self.current_position:
@@ -62,7 +62,7 @@ class SimulatedExchange(Exchange):
         # returns: dictionary of orders
         #          {{ quantity: float
         #             placement_time: float
-        #             side: string 'buy' or 'sell'
+        #             side: Side
         #             entry_price: float
         #             id: int }}
         return self.limit_orders
