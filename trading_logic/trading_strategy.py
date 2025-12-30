@@ -11,7 +11,8 @@ from config import MIN_FVG_STRENGTH
 from models.fvg import FVG
 from models.setup import Setup
 from client.client import Client
-from exchange.exchange import Exchange
+from models.direction import Direction
+from models.side import Side
 
 
 class FVGStrategy:
@@ -21,7 +22,7 @@ class FVGStrategy:
         self.active_fvgs = []
         self.existing_fvg_times = []
 
-        self.last_order_placed = None
+        self.most_recent_setup = None
         self.active_setups = []
         self.last_analysis_time = None
         self.current_position = None
@@ -34,26 +35,15 @@ class FVGStrategy:
         self.client = client
         self.exchange = client.exchange
 
-
     def clear_setups(self):
         self.active_setups = []
-        self.active_fvgs = []
-
-
-    def update_active_setups(self, df):
-        # Create a new list without expired setups to avoid modifying list while iterating
-        current_time = df['T'].iloc[-1]
-        self.active_setups = [
-            setup for setup in self.active_setups 
-            if current_time - setup.indicator_time <= timedelta(minutes=MAX_INDICATOR_ENTRY_DIST)
-        ]
 
 
     def update_fvgs(self, df: pd.DataFrame):
         """Update and maintain active FVGs"""
 
         recent_fvgs = []
-        fvg_candidates = self.analyzer.detect_fvg(df[-(MAX_FVG_INDICATOR_DIST + 1):])
+        fvg_candidates = self.analyzer.detect_fvg(df[-(MAX_FVG_LOOKBACK + 1):])
         
         for fvg_candidate in fvg_candidates:
             fvg = FVG(
@@ -85,7 +75,7 @@ class FVGStrategy:
                     if current_high > fvg.bottom:
                         fvg.fill()
                 
-                if current_time - fvg.time > timedelta(minutes=MAX_FVG_INDICATOR_DIST):
+                if current_time - fvg.time > timedelta(minutes=MAX_FVG_LOOKBACK):
                     fvg.fill()
 
             if not fvg.filled:
@@ -94,221 +84,136 @@ class FVGStrategy:
         self.active_fvgs = active_fvgs
 
 
-    def identify_larger_trend(self, htf_df: pd.DataFrame) -> Dict:
-        """Identify the larger trend direction and strength"""
-        if len(htf_df) < 20:
-            return {'trend': 'neutral', 'strength': 0, 'confidence': 0}
+    def is_ascending(self, series):
+        for i in range(0, len(series)):
+            if series[i] < series[i-1]:
+                return False
+        return True
 
-        htf_analyzed = self.analyzer.analyze_structure(htf_df)
-
-        # Count bullish vs bearish structure
-        bullish_bos_count = htf_analyzed['bullish_bos'].sum()
-        bearish_bos_count = htf_analyzed['bearish_bos'].sum()
-        bullish_mss_count = htf_analyzed['bullish_mss'].sum()
-        bearish_mss_count = htf_analyzed['bearish_mss'].sum()
-
-        # Weighted trend strength: BOS gets 2x weight
-        bullish_strength = 2 * bullish_bos_count + bullish_mss_count
-        bearish_strength = 2 * bearish_bos_count + bearish_mss_count
-
-        # Determine trend direction
-        if bullish_strength > bearish_strength:
-            trend = 'uptrend'
-            strength = bullish_strength
-            confidence = bullish_strength / (bullish_strength + bearish_strength)
-        elif bearish_strength > bullish_strength:
-            trend = 'downtrend'
-            strength = bearish_strength
-            confidence = bearish_strength / (bullish_strength + bearish_strength)
-        else:  ### REMOVE NEUTRAL
-            trend = 'neutral'
-            strength = max(bullish_strength, bearish_strength)
-            confidence = 0.5
-
-        return {
-            'trend': trend,
-            'strength': strength,
-            'confidence': confidence,
-            'bullish_strength': bullish_strength,
-            'bearish_strength': bearish_strength
-        }
+    def is_descending(self, series):
+        for i in range(0, len(series)):
+            if series[i] > series[i-1]:
+                return False
+        return True
 
 
-    def check_entry_conditions(self, df: pd.DataFrame, htf_df: pd.DataFrame) -> Optional[Dict]:
-        """Check if entry conditions are met for the trend continuation strategy"""
-        #print(" - Checking entry conditions...")
-        if len(df) < 20:
+    def identify_trend(self, df, min_seq):
+        swing_lows = df.loc[df['swing_low'].notna(), 'swing_low'].to_numpy()
+        swing_highs = df.loc[df['swing_high'].notna(), 'swing_high'].to_numpy()
+        #print(len(swing_lows), len(swing_highs))
+
+        if len(swing_lows) < min_seq or len(swing_highs) < min_seq:
+            print("Not enough swing points to identify trend")
+            return None
+        elif (self.is_ascending(swing_lows[-min_seq:])
+                and self.is_ascending(swing_highs[-min_seq:])):
+            return 'uptrend'
+        elif (self.is_descending(swing_lows[-min_seq:])
+              and self.is_descending(swing_highs[-min_seq:])):
+            return 'downtrend'
+        else:
             return None
 
-        # Step 1: Identify larger trend
-        larger_trend = self.identify_larger_trend(htf_df)
 
-        # Make trend confidence requirement stricter
-        if larger_trend['confidence'] < MIN_LARGER_TREND_CONFIDENCE:
-            #print(f"(check_entry_conditions) trend confidence too low ({larger_trend['confidence'] * 100:.2f}%) - skipping entry.")
-            return None
-        
-        last_close = df['close'].iloc[-1]
-        last_high = df['high'].iloc[-1]
-        last_low = df['low'].iloc[-1]
+    def find_setups(self, df: pd.DataFrame, htf_df: pd.DataFrame):
+        self.update_fvgs(df)
+        if len(self.active_fvgs) == 0:
+            return
 
-        if larger_trend['trend'] == 'uptrend':
-            self._add_bullish_setups(df, last_close=last_close, larger_trend=larger_trend)
+        last_fvg = self.active_fvgs[-1]
+        if df['T'].iloc[-1] == last_fvg.time + timedelta(minutes=1):
+            swing_lows = df.loc[df['swing_low'].notna(), 'swing_low'].to_numpy()
+            swing_highs = df.loc[df['swing_high'].notna(), 'swing_high'].to_numpy()
 
-        elif larger_trend['trend'] == 'downtrend':
-            self._add_bearish_setups(df, last_close=last_close, larger_trend=larger_trend)
+            if (last_fvg.bullish
+                and self.is_descending(swing_highs[(MIN_SEQUENTIAL_SWINGS + 1):-1])
+                and len(swing_highs) >= 2
+                and swing_highs[-1] >= swing_highs[-2]
+                #and self.identify_trend(htf_df, HTF_SEQUENTIAL_MIN) == 'uptrend'
+                ):
+                mss_time = df.loc[df['swing_high'].notna(), 'T'].iloc[-1]
+                self.active_setups = []
+                self.add_setup(direction=Direction.LONG, fvg=last_fvg, mss_time=mss_time, df=df)
 
-        return None
-
-
-    def _add_bullish_setups(self, df, last_close, larger_trend):
-        bullish_fvgs = sorted([fvg for fvg in self.active_fvgs if fvg.bullish], key=lambda fvg: fvg.time)
-        last_low = df['low'].iloc[-1]
-
-        df_analyzed = self.analyzer.analyze_structure(df)
-        present_bullish_movement = df_analyzed["bullish_bos"].iloc[-1] or df_analyzed["bullish_mss"].iloc[-1]
-
-        if present_bullish_movement or not REQUIRE_SETUP_INDICATORS:
-            for fvg in bullish_fvgs:
-                time_since_fvg = int((df['T'].iloc[-1] - fvg.time).total_seconds() / 60)
-
-                recent_df = df_analyzed[-time_since_fvg:]
-                has_bearish_reversal = (
-                        recent_df["bearish_bos"].sum() > 0 or
-                        recent_df["bearish_mss"].sum() > 0
-                )
-
-                if not (has_bearish_reversal and REVERSAL_CONSTRAINT_ENABLED):
-                    # Check if setup already exists for this FVG
-                    fvg_already_has_setup = any(
-                        setup.fvg.time == fvg.time and setup.long
-                        for setup in self.active_setups
-                    )
-                    
-                    if not fvg_already_has_setup:
-                        stop_loss = fvg.bottom - STOP_LOSS_BUFFER
-
-                        # Find the nearest swing low for structure-based stop
-                        nearest_swing_low, _ = self._find_nearest_swing(type='low', df_analyzed=df_analyzed, current_price=last_low)
-                        if nearest_swing_low:
-                            swing_stop = nearest_swing_low - STOP_LOSS_BUFFER
-                            # Use the LOWER of the two stops (FVG-based or structure-based)
-                            stop_loss = min(stop_loss, swing_stop)
-
-                        # TEMP SOLUTION
-                        entry_price = fvg.midpoint
-                        stop_distance = entry_price * MIN_STOP_DISTANCE_COIN
-                        #if stop_distance < entry_price * MIN_STOP_DISTANCE_COIN:
-                        #    stop_distance = entry_price * MIN_STOP_DISTANCE_COIN
-                        stop_loss = entry_price - stop_distance
-                        quantity = self.risk_amount / stop_distance
-
-                        existing_entry_prices = [setup.entry_price for setup in self.active_setups]
-                        if entry_price in existing_entry_prices:
-                            continue
-
-                        setup = Setup(
-                            entry_price=entry_price,
-                            quantity=quantity,
-                            direction='long',
-                            stop_loss=stop_loss,
-                            fvg=fvg,
-                            indicator_type='bos' if df_analyzed["bullish_bos"].iloc[-1] else 'mss',
-                            indicator_time = df['T'].iloc[-1],
-                            larger_trend=larger_trend['trend'],
-                            trend_confidence=larger_trend['confidence'],
-                        )
-                        self.active_setups.append(setup)
-                        self.last_order_placed = setup
-                        self.client.place_limit_order(
-                            quantity=quantity,
-                            placement_time=df['T'].iloc[-1],
-                            side="buy",
-                            entry_price=entry_price,
-                        )
+            elif (last_fvg.bearish
+                and self.is_ascending(swing_lows[(MIN_SEQUENTIAL_SWINGS + 1):-1])
+                and len(swing_lows) >= 2
+                and swing_lows[-1] <= swing_lows[-2]
+                #and self.identify_trend(htf_df, HTF_SEQUENTIAL_MIN) == 'downtrend'
+                ):
+                mss_time = df.loc[df['swing_low'].notna(), 'T'].iloc[-1]
+                self.active_setups = []
+                self.add_setup(direction=Direction.SHORT, fvg=last_fvg, mss_time=mss_time, df=df)
 
 
-    def _add_bearish_setups(self, df, last_close, larger_trend):
-        bearish_fvgs = sorted([fvg for fvg in self.active_fvgs if fvg.bearish], key=lambda fvg: fvg.time)
-        df_analyzed = self.analyzer.analyze_structure(df)
-        present_bearish_movement = df_analyzed["bearish_bos"].iloc[-1] or df_analyzed["bearish_mss"].iloc[-1]
-        last_high = df['high'].iloc[-1]
+    def add_setup(self, direction: Direction, fvg: FVG, mss_time, df: pd.DataFrame):
+        entry_price = fvg.midpoint
 
-        if present_bearish_movement or not REQUIRE_SETUP_INDICATORS:
-            for fvg in bearish_fvgs:
-                time_since_fvg = int((df['T'].iloc[-1] - fvg.time).total_seconds() / 60)
+        if direction == Direction.LONG:
+            stop_loss = entry_price - entry_price * MIN_STOP_DISTANCE_COIN
+            maximum_allowed = min(fvg.bottom, df['low'].iloc[-1])
+            initial_stop_loss = min(stop_loss, maximum_allowed)
+        else:
+            stop_loss = entry_price + entry_price * MIN_STOP_DISTANCE_COIN
+            minimum_allowed = max(fvg.top, df['high'].iloc[-1])
+            initial_stop_loss = max(stop_loss, minimum_allowed)
 
-                recent_df = df_analyzed[-time_since_fvg:]
-                has_bullish_reversal = (
-                        recent_df["bullish_bos"].sum() > 0 or
-                        recent_df["bullish_mss"].sum() > 0
-                )
+        stop_distance = abs(entry_price - initial_stop_loss)
+        quantity = self.risk_amount / stop_distance
 
-                if not (has_bullish_reversal and REVERSAL_CONSTRAINT_ENABLED):
-                    # Check if setup already exists for this FVG
-                    fvg_already_has_setup = any(
-                        setup.fvg.time == fvg.time and setup.short
-                        for setup in self.active_setups
-                    )
-                    
-                    if not fvg_already_has_setup:
-                        stop_loss = fvg.top + STOP_LOSS_BUFFER
 
-                        # Find the nearest swing high for structure-based stop
-                        nearest_swing_high, _ = self._find_nearest_swing(type='high', df_analyzed=df_analyzed, current_price=last_high)
-                        if nearest_swing_high:
-                            swing_stop = nearest_swing_high + STOP_LOSS_BUFFER
-                            # Use the HIGHER of the two stops (FVG-based or structure-based)
-                            stop_loss = max(stop_loss, swing_stop)
+        setup = Setup(
+            entry_price=entry_price,
+            quantity=quantity,
+            direction=direction,
+            initial_stop_loss=initial_stop_loss,
+            fvg=fvg,
+            mss_time=mss_time,
+            larger_trend='uptrend' if fvg.bullish else 'downtrend',
+            trend_confidence=1.0,
+        )
+        self.active_setups.append(setup)
+        self.most_recent_setup = setup
+        self.client.place_limit_order(
+            quantity=quantity,
+            placement_time=df['T'].iloc[-1],
+            side=Side.BUY if direction == Direction.LONG else Side.SELL,
+            entry_price=entry_price,
+        )
 
-                        # TEMP SOLUTION
-                        entry_price = fvg.midpoint
-                        stop_distance = entry_price * MIN_STOP_DISTANCE_COIN
-                        #if stop_distance < entry_price * MIN_STOP_DISTANCE_COIN:
-                        #    stop_distance = entry_price * MIN_STOP_DISTANCE_COIN
-                        stop_loss = entry_price + stop_distance
-                        quantity = self.risk_amount / stop_distance
 
-                        existing_entry_prices = [setup.entry_price for setup in self.active_setups]
-                        if entry_price in existing_entry_prices:
-                            continue
-                        
-                        setup = Setup(
-                            entry_price=entry_price,
-                            quantity=quantity,
-                            direction='short',
-                            stop_loss=stop_loss,
-                            fvg=fvg,
-                            indicator_type='bos' if df_analyzed["bearish_bos"].iloc[-1] else 'mss',
-                            indicator_time = df['T'].iloc[-1],
-                            larger_trend=larger_trend['trend'],
-                            trend_confidence=larger_trend['confidence'],
-                        )
-                        self.active_setups.append(setup)
-                        self.last_order_placed = setup
-                        self.client.place_limit_order(
-                            quantity=quantity,
-                            placement_time=df['T'].iloc[-1],
-                            side="sell",
-                            entry_price=entry_price,
-                        )
-
-    def _get_valid_swing_stop(self, type, df, current_candle):
+    def get_valid_swing_stop(self, type, df, current_candle):
         current_idx = len(df) - 1
-        swing_candle = df.iloc[-(SWING_LOOKBACK_FORWARD + 1)]
-        swing_idx = len(df) - (SWING_LOOKBACK_FORWARD + 1)
+        swing_idx = current_idx - SWING_LOOKBACK_FORWARD - 1
 
-        for i in list(range(swing_idx - SWING_LOOKBACK_BACKWARD, swing_idx)) + list(range(swing_idx + 1, current_idx + 1)):
-            if (type == 'high' and df['high'].iloc[i] > swing_candle['high']) or \
-                    (type == 'low' and df['low'].iloc[i] < swing_candle['low']):
+        # Check if we have enough data for the backward window
+        if swing_idx < SWING_LOOKBACK_BACKWARD:
+            return None
+
+        swing_candle = df.iloc[swing_idx]
+        swing_value = swing_candle['high'] if type == 'high' else swing_candle['low']
+
+        # Check backward window: SWING_LOOKBACK_BACKWARD candles before swing
+        for i in range(swing_idx - SWING_LOOKBACK_BACKWARD, swing_idx):
+            if type == 'high' and df['high'].iloc[i] > swing_value:
+                return None
+            elif type == 'low' and df['low'].iloc[i] < swing_value:
                 return None
 
-        if type == 'high' and swing_candle['high'] <= current_candle['high']:
+        # Check forward window: SWING_LOOKBACK_FORWARD candles after swing (up to but not including current)
+        for i in range(swing_idx + 1, swing_idx + SWING_LOOKBACK_FORWARD + 1):
+            if type == 'high' and df['high'].iloc[i] > swing_value:
+                return None
+            elif type == 'low' and df['low'].iloc[i] < swing_value:
+                return None
+
+        # Verify swing is beyond current candle (provides stop loss protection)
+        if type == 'high' and swing_value <= current_candle['high']:
             return None
-        elif type == 'low' and swing_candle['low'] >= current_candle['low']:
+        elif type == 'low' and swing_value >= current_candle['low']:
             return None
 
-        return swing_candle[type]
+        return swing_value
 
 
     def _find_nearest_swing(self, type, df_analyzed, current_price):
@@ -332,18 +237,23 @@ class FVGStrategy:
     def cancel_lagging_orders(self, current_time):
         orders = self.exchange.get_limit_orders()
         for order in orders:
-            if (current_time - order['placement_time']).total_seconds() / 60 > MAX_INDICATOR_ENTRY_DIST:
+            if (current_time - order['placement_time']).total_seconds() / 60 > MAX_ORDER_DURATION:
                 self.client.cancel_order(order['id'])
 
 
     def update_trailing_stop(self, current_stop, position, df, candle):
-
-        if position.long:
+        if position.direction == Direction.LONG:
             risk = max(0.0, position.entry_price - current_stop)
             if risk > 0:
                 reward = candle['low'] - position.entry_price
                 if reward < risk:
                     return None
+
+            swing_point = self.get_valid_swing_stop('low', df, candle)
+            if swing_point:
+                new_stop = swing_point - STOP_LOSS_BUFFER
+                if new_stop > position.get_last_stop():
+                    return new_stop
         else:  # short
             risk = max(0.0, current_stop - position.entry_price)
             if risk > 0:
@@ -351,18 +261,7 @@ class FVGStrategy:
                 if reward < risk:
                     return None
 
-
-        if position.long:
-            swing_point = self._get_valid_swing_stop('low', df, candle)
-            #swing_point = self._find_nearest_swing("low", df.iloc[-(len(position.trade_df)-50):], candle['low'])[0]
-            if swing_point:
-                new_stop = swing_point - STOP_LOSS_BUFFER
-                if new_stop > position.get_last_stop():
-                    return new_stop
-
-        else:  # short
-            swing_point = self._get_valid_swing_stop('high', df, candle)
-            #swing_point = self._find_nearest_swing("high", df.iloc[-(len(position.trade_df)-50):], candle['high'])[0]
+            swing_point = self.get_valid_swing_stop('high', df, candle)
             if swing_point:
                 new_stop = swing_point + STOP_LOSS_BUFFER
                 if new_stop < position.get_last_stop():

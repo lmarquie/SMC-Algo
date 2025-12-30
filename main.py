@@ -4,12 +4,16 @@ from candleManager.simulatedCandleManager import SimulatedCandleManager
 from models.PerformanceCalculator import PerformanceCalculator
 from trading_logic.structure_analysis import StructureAnalyzer
 from trading_logic.trading_strategy import FVGStrategy
-from models.candle import Candle
-from models.position import Position
+
 from config import *
 import shutil
 import os
 from datetime import timedelta
+
+from models.direction import Direction
+from models.side import Side
+from models.candle import Candle
+from models.position import Position
 
 SYMBOL = 'SOL'
 EXCHANGE = 'binance'
@@ -34,35 +38,36 @@ num_trades = 0
 for i in range(len(candleManager.future_data)):
     candleManager.process_candle(next_candle=empty_candle)
     current_candle = candleManager.ltf_data.iloc[-1]
-
-    strategy.update_fvgs(df=candleManager.ltf_data)
     strategy.cancel_lagging_orders(current_candle['T'])
 
     found_positions = exchange.get_positions(high=current_candle['high'], low=current_candle['low'])
     if len(found_positions) == 1:
         found_position = found_positions[0]
         if not tracked_position:
-            setup = strategy.last_order_placed
+            setup = strategy.most_recent_setup
+            if (
+                found_position['side'] == Side.BUY and setup.direction == Direction.SHORT
+                or found_position['side'] == Side.SELL and setup.direction == Direction.LONG
+            ):
+                raise Exception("Found position does not match last order side")
+
             print("(main) New position entered")
             client.place_stop_market_order(
                 quantity=found_position['quantity'],
                 placement_time=current_candle['T'],
-                side="sell" if found_position['side'] == "buy" else "buy",
-                trigger_price=setup.stop_loss,
+                side=Side.SELL if found_position['side'] == Side.SELL else Side.BUY,
+                trigger_price=setup.initial_stop_loss,
             )
 
             tracked_position = Position(
                 symbol=SYMBOL,
                 risk_amount=RISK_AMOUNT,
-                initial_stop_loss=setup.stop_loss,
+                initial_stop_loss=setup.initial_stop_loss,
                 entry_time=candleManager.ltf_data['T'].iloc[-1],
-                side=found_position['side'],
+                direction=Direction.LONG if found_position['side'] == Side.BUY else Direction.SHORT,
                 trade_df=candleManager.ltf_data[-50:],
                 fvg=setup.fvg,
-                indicator_type=setup.indicator_type,
-                indicator_time=setup.indicator_time,
-                larger_trend=setup.larger_trend,
-                trend_confidence=setup.trend_confidence,
+                mss_time=setup.mss_time,
                 entry_timestamp=candleManager.ltf_data['T'].iloc[-1],
             )
             strategy.clear_setups()
@@ -73,7 +78,7 @@ for i in range(len(candleManager.future_data)):
             #print("(main) Adding candle to existing position")
             tracked_position.add_candle(current_candle)
 
-            stop_side = 'buy' if found_position['side'] == 'long' else 'sell'
+            stop_side = Side.SELL if found_position['side'] == Side.BUY else Side.BUY
             stop_lookback = int((candleManager.ltf_data['T'].iloc[-1] - tracked_position.entry_time).total_seconds() / 60)
             trigger_price = strategy.update_trailing_stop(
                 current_stop=tracked_position.get_last_stop(),
@@ -114,7 +119,7 @@ for i in range(len(candleManager.future_data)):
         else:
             if (not last_position_close_time
                 or current_candle['T'] >= last_position_close_time + timedelta(minutes=20)):
-                strategy.check_entry_conditions(candleManager.ltf_data, candleManager.htf_data)
+                strategy.find_setups(candleManager.ltf_data, candleManager.htf_data)
 
 performanceCalculator.log_performance()
 

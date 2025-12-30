@@ -1,12 +1,14 @@
 from client.client import Client
 from exchange.simulatedExchange import SimulatedExchange
 
+from models.side import Side
+
 class SimulatedClient(Client):
     def __init__(self, exchange: SimulatedExchange):
         super().__init__(exchange)
         self.id_counter = 0
 
-    def place_limit_order(self, quantity, placement_time, side, entry_price):
+    def place_limit_order(self, quantity, placement_time, side: Side, entry_price):
         self.exchange.add_limit_order({
             "quantity": quantity,
             "placement_time": placement_time,
@@ -16,7 +18,7 @@ class SimulatedClient(Client):
         })
         self.id_counter += 1
 
-    def place_stop_market_order(self, quantity, placement_time, side, trigger_price):
+    def place_stop_market_order(self, quantity, placement_time, side: Side, trigger_price):
         self.exchange.add_stop_market_order({
             "quantity": quantity,
             "placement_time": placement_time,

@@ -8,7 +8,7 @@ class StructureAnalyzer:
         # Minimum FVG size: 0.10% of coin value
         self.min_fvg_strength = min_fvg_strength
 
-    def detect_swing_points(self, highs: np.array, lows: np.array):
+    def detect_swing_points(self, highs: np.ndarray, lows: np.ndarray):
         """Detect swing highs and lows in the price data
 
         Returns: swing_highs, swing_lows
@@ -34,69 +34,6 @@ class StructureAnalyzer:
 
         return swing_highs, swing_lows
 
-    def detect_bos(self, closes: np.array, swing_highs: np.array, swing_lows: np.array):
-        """
-        Detect Break of Structure (BOS) - price breaking above/below swing points
-
-        Returns: bullish_bos, bearish_bos
-        """
-
-        bullish_bos = np.full(len(closes), 0)
-        bearish_bos = np.full(len(closes), 0)
-
-        last_swing_high = None
-        last_swing_low = None
-
-        for i in range(len(closes)):
-            # Update last swing points
-            if not pd.isna(swing_highs[i]):
-                last_swing_high = swing_highs[i]
-            if not pd.isna(swing_lows[i]):
-                last_swing_low = swing_lows[i]
-
-            # Detect bullish BOS: close above last swing high
-            if last_swing_high and closes[i] > last_swing_high:
-                bullish_bos[i] = 1
-                last_swing_high = None  # Reset after BOS
-
-            # Detect bearish BOS: close below last swing low
-            if last_swing_low and closes[i] < last_swing_low:
-                bearish_bos[i] = 1
-                last_swing_low = None  # Reset after B1OS
-
-        return bullish_bos, bearish_bos
-
-    def detect_mss(self, swing_highs: np.array, swing_lows: np.array):
-        """
-        Detect Market Structure Shift (MSS) - change from higher highs to lower highs or vice versa
-
-        Returns: bullish_mss, bearish_mss
-        """
-
-        bullish_mss = np.full(len(swing_highs), 0)
-        bearish_mss = np.full(len(swing_highs), 0)
-
-        # Drop NA Values
-        swing_highs_dropna = swing_highs[np.logical_not(np.isnan(swing_highs))]
-        swing_lows_dropna = swing_lows[np.logical_not(np.isnan(swing_lows))]
-
-        if len(swing_lows_dropna) >= 3:
-            for i in range(2, len(swing_lows_dropna)):
-                if (swing_lows_dropna[i - 2] < swing_lows_dropna[i - 1] and  # Lower low
-                        swing_lows_dropna[i] < swing_lows_dropna[i - 1]):  # Higher low
-                    # Find the index of this swing low in the original dataframe
-                    idx = np.where(swing_lows == swing_lows_dropna[i])[0][0]
-                    bullish_mss[idx] = 1
-
-        if len(swing_highs_dropna) >= 3:
-            for i in range(2, len(swing_highs_dropna)):
-                if (swing_highs_dropna[i - 2] > swing_highs_dropna[i - 1] and  # Higher high
-                        swing_highs_dropna[i] > swing_highs_dropna[i - 1]):  # Lower high
-                    # Find the index of this swing high in the original dataframe
-                    idx = np.where(swing_highs == swing_highs_dropna[i])[0][0]
-                    bearish_mss[idx] = 1
-
-        return bullish_mss, bearish_mss
 
     def detect_fvg(self, df: pd.DataFrame) -> List[Dict]:
         """Detect Fair Value Gaps (FVG) - imbalance between candles"""
@@ -206,21 +143,11 @@ class StructureAnalyzer:
         """Complete structure analysis combining all methods"""
         highs = df["high"].to_numpy()
         lows = df["low"].to_numpy()
-        opens = df["open"].to_numpy()
-        closes = df["close"].to_numpy()
 
         # Apply all analysis methods
         swing_highs, swing_lows = self.detect_swing_points(highs, lows)
-        bullish_bos, bearish_bos = self.detect_bos(closes, swing_highs, swing_lows)
-        bullish_mss, bearish_mss = self.detect_mss(swing_highs, swing_lows)
-
-        df.loc[:,"swing_high"] = swing_highs
         df.loc[:,"swing_high"] = swing_highs
         df.loc[:,"swing_low"] = swing_lows
-        df.loc[:,"bullish_bos"] = bullish_bos
-        df.loc[:,"bearish_bos"] = bearish_bos
-        df.loc[:,"bullish_mss"] = bullish_mss
-        df.loc[:,"bearish_mss"] = bearish_mss
 
         return df
 

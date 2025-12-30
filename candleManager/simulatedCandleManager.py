@@ -27,7 +27,7 @@ class SimulatedCandleManager(CandleManager):
         self.ltf_data = data.head(start_amount)
 
         time_idx_df = self.ltf_data.set_index('T', inplace=False, drop=False)
-        self.htf_data = time_idx_df.resample('15min').agg({
+        self.htf_data = time_idx_df.resample(f'{HTF_CANDLE_DURATION}min').agg({
             'open': 'first',
             'high': 'max',
             'low': 'min',

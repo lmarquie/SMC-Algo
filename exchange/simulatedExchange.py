@@ -1,4 +1,6 @@
 from exchange.exchange import Exchange
+from models.side import Side
+from models.direction import Direction
 
 class SimulatedExchange(Exchange):
     def __init__(self, balance):
@@ -12,9 +14,12 @@ class SimulatedExchange(Exchange):
     # returns True if position has exited, else False
     def check_position_exited(self, high: float, low: float):
         if self.current_position and len(self.stop_market_orders) == 1:
-            trigger_price = self.stop_market_orders[0]['trigger_price']
-            #print(f"(check_position_exited) trigger price {trigger_price}")
-            if high >= trigger_price >= low:
+            stop_market_order = self.stop_market_orders[0]
+            stop_side = stop_market_order['side']
+            stop_trigger_price = stop_market_order['trigger_price']
+            if stop_side == Side.BUY and high >= stop_trigger_price:
+                return True
+            elif stop_side == Side.SELL and low <= stop_trigger_price:
                 return True
         return False
 
@@ -22,7 +27,7 @@ class SimulatedExchange(Exchange):
     def get_positions(self, high: float, low: float):
         # returns: dictionary of position-related values
         #          {{ quantity: float
-        #            side: string 'buy' or 'sell'
+        #            side: Side
         #            entry_price: float }}
         limit_orders = self.get_limit_orders()
         if self.current_position:

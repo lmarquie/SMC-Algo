@@ -3,43 +3,32 @@ from helpers.telegram_setup import send_telegram_image
 from config import *
 import pandas as pd
 import numpy as np
+
 from models.fvg import FVG
+from models.direction import Direction
 
 class Position:
     def __init__(
             self,
             symbol,
             risk_amount,
-            initial_stop_loss,
+            initial_stop_loss: float,
             entry_time,
-            side, # long or short
+            direction: Direction,
             trade_df,
             fvg: FVG,
-            indicator_type,
-            indicator_time,
-            larger_trend,
-            trend_confidence,
+            mss_time,
             entry_timestamp,
         ):
-
-        if (fvg.time - entry_time).total_seconds() / 60 > MAX_INDICATOR_ENTRY_DIST + MAX_INDICATOR_ENTRY_DIST:
-            raise ValueError("(position) FVG too early: aborting program")
-
         self.symbol = symbol
         self.entry_time = entry_time
-        self.side = side
+        self.direction = direction
         self.fvg = fvg
         self.fvg_idx = len(trade_df) - 1 - int((entry_time - fvg.time).total_seconds() / 60)
         if self.fvg_idx < 0:
             raise ValueError("(position) FVG too early: aborting program")
-        self.indicator_type = indicator_type
-        self.indicator_time = indicator_time
-        self.larger_trend = larger_trend
-        self.trend_confidence = trend_confidence
+        self.mss_time = mss_time
         self.trade_df = trade_df
-
-        self.long = side == 'long'
-        self.short = side == 'short'
         self.entry_price = fvg.midpoint
 
         self.initial_stop_loss = initial_stop_loss
@@ -51,8 +40,6 @@ class Position:
         self.margin = self.full_exposure / MAX_LEVERAGE[symbol]
         self.entry_fees = self.full_exposure * 0.00015
 
-        self.mss = indicator_type == 'mss'
-        self.bos = indicator_type == 'bos'
         self.pnl = 0
 
         self.stop_losses = [{
@@ -85,9 +72,8 @@ class Position:
                 boxprops = {'facecolor': 'red', 'alpha': 1}
             elif idx == self.fvg_idx:
                 boxprops = {'facecolor': 'orange', 'alpha': 1}
-            elif candle['T'] == self.indicator_time:
-                color = 'yellow' if self.mss else 'blue'
-                boxprops = {'facecolor': color, 'alpha': 1}
+            elif candle['T'] == self.mss_time:
+                boxprops = {'facecolor': 'yellow', 'alpha': 1}
             elif self.entry_time < candle['T'] < exit_time:
                 if candle["close"] >= candle["open"]:
                     boxprops = {'facecolor': 'green', 'alpha': 0.4}
@@ -116,7 +102,7 @@ class Position:
             plt.scatter(placement_point, value, s=5, color='black', marker='o')
 
         ax.set_xticks([])
-        trade_direction = self.side.upper()
+        trade_direction = "LONG" if self.direction == Direction.LONG else "SHORT"
         trade_result = "WIN" if pnl_dollar > 0 else "LOSS"
         fig.suptitle(f"Trade #{self.entry_time}: {trade_direction} - {trade_result} (${pnl_dollar:.2f})")
 
@@ -148,7 +134,7 @@ class Position:
         })
 
     def calculate_pnl(self, price: float):
-        if self.side == 'long':
+        if self.direction == Direction.LONG:
             return (price - self.entry_price) * self.quantity
         else:
             return (self.entry_price - price) * self.quantity
